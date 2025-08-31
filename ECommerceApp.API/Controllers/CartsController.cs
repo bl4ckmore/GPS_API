@@ -19,7 +19,7 @@ public class CartsController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetAll(CancellationToken ct) =>
         Ok(await _carts.GetAllAsync(ct));
-
+    
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetById(Guid id, CancellationToken ct)
     {

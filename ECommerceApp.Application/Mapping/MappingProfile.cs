@@ -8,13 +8,15 @@ public class MappingProfile : Profile
 {
     public MappingProfile()
     {
-        CreateMap<Category, CategoryDto>();
-        CreateMap<ProductImage, ProductImageDto>();
-        CreateMap<ProductAttribute, ProductAttributeDto>();
-
+        // Entity -> DTO
         CreateMap<Product, ProductDto>()
-            .ForMember(d => d.Attributes, opt => opt.MapFrom(s => s.Attributes))
-            .ForMember(d => d.Images, opt => opt.MapFrom(s => s.Images))
-            .ForMember(d => d.Category, opt => opt.MapFrom(s => s.Category));
+            .ForMember(d => d.Attributes, o => o.MapFrom(s => s.Parameters))
+            .ForMember(d => d.Category, o => o.MapFrom(s => s.Category != null ? s.Category.Name : null));
+
+        // DTO -> Entity
+        CreateMap<ProductDto, Product>()
+            .ForMember(d => d.Parameters, o => o.MapFrom(s => s.Attributes))
+            .ForMember(d => d.Category, o => o.Ignore())             // set by CategoryId
+            .ForMember(d => d.CategoryId, o => o.MapFrom(s => s.CategoryId));
     }
 }

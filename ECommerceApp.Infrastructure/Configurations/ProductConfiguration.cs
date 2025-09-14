@@ -1,56 +1,38 @@
+﻿using ECommerceApp.Core.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using ECommerceApp.Core.Entities;
 
-namespace ECommerceApp.Infrastructure.Configurations;
-
-public class ProductConfiguration : IEntityTypeConfiguration<Product>
+namespace ECommerceApp.Infrastructure.Configurations
 {
-    public void Configure(EntityTypeBuilder<Product> builder)
+    public class ProductConfiguration : IEntityTypeConfiguration<Product>
     {
-        // Requires Microsoft.EntityFrameworkCore.Relational
-        builder.ToTable("Products");
+        public void Configure(EntityTypeBuilder<Product> b)
+        {
+            b.ToTable("products");
+            b.HasKey(p => p.id);
 
-        // KEY � assumes Product : BaseEntity with Guid Id
-        builder.HasKey(p => p.id);
+            b.Property(p => p.Name).IsRequired().HasMaxLength(200);
+            b.Property(p => p.SKU).HasMaxLength(64);
+            b.Property(p => p.Description).HasMaxLength(2000);
+            b.Property(p => p.LongDescription).HasMaxLength(8000);
 
-        // Properties
-        builder.Property(p => p.Name)
-               .IsRequired()
-               .HasMaxLength(200);
+            b.Property(p => p.Price).HasColumnType("numeric(12,2)");
+            b.Property(p => p.CompareAtPrice).HasColumnType("numeric(12,2)");
+            b.Property(p => p.SalePrice).HasColumnType("numeric(12,2)");
+            b.Property(p => p.Weight).HasColumnType("numeric(10,3)");
 
-        builder.Property(p => p.Description)
-               .HasMaxLength(500);
+            b.Property(p => p.Images).HasColumnType("text[]");
+            b.Property(p => p.Features).HasColumnType("text[]");
+            b.Property(p => p.Parameters).HasColumnType("jsonb");
 
-        builder.Property(p => p.LongDescription)
-               .HasMaxLength(5000);
+            // ✅ Make the FK a GUID and nullable in the DB
+            b.Property(p => p.CategoryId).HasColumnType("uuid").IsRequired(false);
 
-        builder.Property(p => p.SKU)
-               .IsRequired()
-               .HasMaxLength(50);
-
-        // Decimal precision (provider-agnostic)
-        builder.Property(p => p.Price).HasPrecision(18, 2);
-        builder.Property(p => p.CompareAtPrice).HasPrecision(18, 2);
-        builder.Property(p => p.Weight).HasPrecision(10, 3);
-
-        // Indexes
-        builder.HasIndex(p => p.SKU).IsUnique();
-        builder.HasIndex(p => p.Name);
-        builder.HasIndex(p => p.IsActive);
-        builder.HasIndex(p => p.IsFeatured);
-
-        // Category relationship
-        builder.HasOne(p => p.Category)
-               .WithMany(c => c.Products)
-               .HasForeignKey(p => p.CategoryId)
-               .OnDelete(DeleteBehavior.Restrict);
-
-        // Images relationship
-        // Use SHADOW FK so ProductImage doesn't need a ProductId property or a back navigation.
-        builder.HasMany(p => p.Images)
-               .WithOne()                          // no navigation on ProductImage
-               .HasForeignKey("ProductId")         // shadow FK column will be created
-               .OnDelete(DeleteBehavior.Cascade);
+            // ✅ Strongly-typed FK mapping (NO generic <int?>, NO string overload)
+            b.HasOne(p => p.Category)
+             .WithMany(c => c.Products)
+             .HasForeignKey(p => p.CategoryId)
+             .OnDelete(DeleteBehavior.SetNull);
+        }
     }
 }

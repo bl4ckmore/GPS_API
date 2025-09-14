@@ -1,34 +1,58 @@
-using ECommerceApp.Core.Entities;
+﻿using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace ECommerceApp.Core.Entities
 {
     public class Product : BaseEntity
     {
-        public string Name { get; set; } = string.Empty;
-        public string Description { get; set; } = string.Empty;
-        public string LongDescription { get; set; } = string.Empty;
-        public decimal Price { get; set; }
-        public decimal? CompareAtPrice { get; set; }
-        public string SKU { get; set; } = string.Empty;
-        public int StockQuantity { get; set; }
+        // Flags
         public bool IsActive { get; set; } = true;
         public bool IsFeatured { get; set; } = false;
-        public int SortOrder { get; set; } = 0;
-        public decimal Weight { get; set; }
-        public string? Dimensions { get; set; }
 
-        // Fix typo in CategoryId property name (was 'CategoriId')
-        public Guid CategoryId { get; set; }
+        // Identity / naming
+        public string Name { get; set; } = default!;
+        public string? SKU { get; set; }
 
-        // Category should be nullable or initialized properly
+        // Descriptions
+        public string? Description { get; set; }
+        public string? LongDescription { get; set; }
+
+        // Pricing
+        public decimal? Price { get; set; }
+        public decimal? CompareAtPrice { get; set; }
+        public decimal? SalePrice { get; set; }
+
+        // Inventory / physical
+        public int Stock { get; set; } = 0;
+        public decimal? Weight { get; set; }
+
+        // Category (navigation, not string)
+        public Guid? CategoryId { get; set; }
         public Category? Category { get; set; }
 
-        public ICollection<ProductImage> Images { get; set; } = new List<ProductImage>();
-        public ICollection<ProductAttribute> Attributes { get; set; } = new List<ProductAttribute>();
-        public ICollection<CartItem> CartItems { get; set; } = new List<CartItem>();
-        public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
+        // Optional FE convenience
+        public string? Type { get; set; }
 
-        // Assuming ProductSEO is a class, make this nullable
-        public ProductSEO? SEO { get; set; }
+        // Media
+        public string[]? Images { get; set; }
+        public string? ImageUrl { get; set; }
+
+        // Specs / features
+        public string[]? Features { get; set; }
+
+        // 🔹 This is the property the alias below needs
+        public Dictionary<string, string>? Parameters { get; set; }
+
+        // Ratings
+        public double? Rating { get; set; }
+        public int? ReviewCount { get; set; }
+
+        // 🔹 Back-compat alias for old code expecting 'Attributes'
+        [NotMapped]
+        public Dictionary<string, string>? Attributes
+        {
+            get => Parameters;
+            set => Parameters = value;
+        }
     }
 }

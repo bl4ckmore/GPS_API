@@ -1,8 +1,11 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using System.Net;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using ECommerceApp.Application.DTOs.Auth;
 using ECommerceApp.Application.Interfaces;
+using ECommerceApp.Infrastructure.Data;
+using ECommerceApp.Core.Entities;
 
 namespace ECommerceApp.API.Controllers;
 
@@ -15,19 +18,22 @@ public class WhatsGpsAuthController : ControllerBase
     private readonly IJwtTokenService _jwt;
     private readonly IWhatsSessionStore _session;
     private readonly IConfiguration _cfg;
+    private readonly ApplicationDbContext _db;
 
     public WhatsGpsAuthController(
         IHttpClientFactory httpFactory,
         ILogger<WhatsGpsAuthController> logger,
         IJwtTokenService jwt,
         IWhatsSessionStore session,
-        IConfiguration cfg)
+        IConfiguration cfg,
+        ApplicationDbContext db)
     {
         _httpFactory = httpFactory;
         _logger = logger;
         _jwt = jwt;
         _session = session;
         _cfg = cfg;
+        _db = db;
     }
 
     [HttpPost("login")]
@@ -35,70 +41,117 @@ public class WhatsGpsAuthController : ControllerBase
     {
         var client = _httpFactory.CreateClient("whats");
 
+        var loginPath = _cfg["WhatsGps:LoginPath"] ?? "user/login.do";
+        var method = (_cfg["WhatsGps:Method"] ?? "POST").ToUpperInvariant();
+        var bodyFormat = (_cfg["WhatsGps:BodyFormat"] ?? "form").ToLowerInvariant();
+        var userField = _cfg["WhatsGps:UsernameField"] ?? "name";
+        var passField = _cfg["WhatsGps:PasswordField"] ?? "password";
+        var tokenPaths = _cfg.GetSection("WhatsGps:TokenPaths").Get<string[]>() ?? new[] { "token", "data.token", "data.session" };
+
         var lang = string.IsNullOrWhiteSpace(dto.Lang) ? "en" : dto.Lang!;
         var tz = dto.TimeZoneSecond ?? (int)(-TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).TotalSeconds);
 
-        var query = new Dictionary<string, string?>
+        var fields = new Dictionary<string, string?>
         {
-            ["name"] = dto.Name ?? "",
-            ["password"] = dto.Password ?? "",
+            [userField] = dto.Name ?? "",
+            [passField] = dto.Password ?? "",
             ["lang"] = lang,
             ["timeZoneSecond"] = tz.ToString()
         };
 
-        var url = "user/login.do" + ToQueryString(query);
-
         try
         {
-            using var res = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+            using var req = BuildRequest(method, bodyFormat, loginPath, fields);
+            req.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
+            req.Headers.TryAddWithoutValidation("User-Agent", "ECommerceApp/1.0 (+http://localhost)");
+
+            using var res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
             var body = await res.Content.ReadAsStringAsync();
+
+            if (!res.IsSuccessStatusCode)
+                return StatusCode((int)res.StatusCode, body);
+
+            var ctype = res.Content.Headers.ContentType?.MediaType ?? "";
+            if (!ctype.Contains("json", StringComparison.OrdinalIgnoreCase))
+                return StatusCode(StatusCodes.Status502BadGateway, new { error = "Upstream returned non-JSON", contentType = ctype });
 
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
 
-            var vendorToken = ExtractToken(root);
-            if (string.IsNullOrWhiteSpace(vendorToken))
-                return StatusCode((int)res.StatusCode, body); // pass through error
+            var token = ExtractTokenViaPaths(root, tokenPaths) ?? ExtractTokenFallback(root);
+            if (string.IsNullOrWhiteSpace(token))
+                return StatusCode(StatusCodes.Status502BadGateway, new { error = "Token missing in upstream JSON" });
 
             var username = (dto.Name ?? "").Trim();
 
-            // role assignment from config list
-            var admins = _cfg.GetSection("Auth:AdminUsers").Get<string[]>() ?? Array.Empty<string>();
-            var roleId = admins.Any(a => string.Equals(a?.Trim(), username, StringComparison.OrdinalIgnoreCase)) ? 2 : 1;
-            var roleName = roleId == 2 ? "Admin" : "User";
+            // Ensure user exists in DB; seed admin from config on first login
+            var user = await _db.Users.SingleOrDefaultAsync(u => u.Username == username);
+            if (user is null)
+            {
+                var adminsCfg = _cfg.GetSection("Auth:AdminUsers").Get<string[]>() ?? Array.Empty<string>();
+                var isAdmin = adminsCfg.Any(a => string.Equals(a?.Trim(), username, StringComparison.OrdinalIgnoreCase));
 
-            // store vendor token by username
-            _session.Set(username, vendorToken);
+                user = new AppUser
+                {
+                    id = Guid.NewGuid(),             // << lower-case id
+                    Username = username,
+                    IsAdmin = isAdmin,
+                    CreatedAt = DateTime.UtcNow
+                };
+                await _db.Users.AddAsync(user);
+            }
+            user.LastLoginAt = DateTime.UtcNow;
 
-            // mint our JWT
+            // store vendor session (in-memory)
+            _session.Set(username, token);
+
+            // audit login
+            _db.UserLogins.Add(new UserLogin
+            {
+                id = Guid.NewGuid(),               // << lower-case id
+                UserId = user.id,                  // << lower-case id
+                Username = username,
+                Provider = "WhatsGPS",
+                Succeeded = true,
+                IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                UserAgent = Request.Headers.UserAgent.ToString(),
+                CreatedAt = DateTime.UtcNow
+            });
+
+            await _db.SaveChangesAsync();
+
+            var roleName = user.IsAdmin ? "Admin" : "User";
+            var roleId = user.IsAdmin ? 2 : 1;
+
             var jwt = _jwt.Create(username, roleName, roleId);
-
-            var user = ExtractUser(root) ?? new { name = username, roleId };
-
-            return Ok(new { jwt, user, roleId, role = roleName });
+            return Ok(new
+            {
+                jwt,
+                user = new { user.id, user.Username, user.IsAdmin },  // << lower-case id
+                roleId,
+                role = roleName
+            });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "WhatsGPS login failed");
-            return Problem("Login proxy error: " + ex.Message, statusCode: StatusCodes.Status502BadGateway);
+            _logger.LogError(ex, "WhatsGPS login error");
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = "Login proxy error", detail = ex.Message });
         }
     }
 
-    [HttpGet("me")]
-    public IActionResult Me()
+    // ----- helpers -----
+    private static HttpRequestMessage BuildRequest(string method, string bodyFormat, string path, Dictionary<string, string?> fields)
     {
-        var name = User.Identity?.Name;
-        var roleId = User.Claims.FirstOrDefault(c => c.Type == "roleId")?.Value ?? "1";
-        return Ok(new { name, roleId = int.Parse(roleId) });
-    }
+        path = path.TrimStart('/');
+        if (method == "GET")
+            return new HttpRequestMessage(HttpMethod.Get, path + ToQueryString(fields));
 
-    [HttpPost("logout")]
-    public IActionResult Logout([FromBody] Dictionary<string, string>? body)
-    {
-        var username = User.Identity?.Name ?? body?.GetValueOrDefault("username");
-        if (!string.IsNullOrWhiteSpace(username))
-            _session.Remove(username);
-        return Ok(new { ok = true });
+        var req = new HttpRequestMessage(HttpMethod.Post, path);
+        if (bodyFormat == "json")
+            req.Content = new StringContent(JsonSerializer.Serialize(fields), System.Text.Encoding.UTF8, "application/json");
+        else
+            req.Content = new FormUrlEncodedContent(fields.Where(kv => kv.Value is not null)!);
+        return req;
     }
 
     private static string ToQueryString(Dictionary<string, string?> kv)
@@ -109,37 +162,43 @@ public class WhatsGpsAuthController : ControllerBase
         return "?" + qs;
     }
 
-    private static string? ExtractToken(JsonElement root)
+    private static string? ExtractTokenViaPaths(JsonElement root, IEnumerable<string> paths)
     {
-        if (root.TryGetProperty("token", out var t) && t.ValueKind == JsonValueKind.String) return t.GetString();
-        if (root.TryGetProperty("data", out var d))
+        foreach (var path in paths)
         {
-            if (d.TryGetProperty("token", out var dt) && dt.ValueKind == JsonValueKind.String) return dt.GetString();
-            if (d.TryGetProperty("session", out var ds) && ds.ValueKind == JsonValueKind.String) return ds.GetString();
-        }
-        foreach (var p in root.EnumerateObject())
-        {
-            if (p.Name.ToLower().Contains("token") && p.Value.ValueKind == JsonValueKind.String)
-                return p.Value.GetString();
-            if (p.Value.ValueKind == JsonValueKind.Object)
-            {
-                var inner = ExtractToken(p.Value);
-                if (!string.IsNullOrWhiteSpace(inner)) return inner;
-            }
+            var parts = path.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (TryGetByPath(root, parts, out var el) && el.ValueKind == JsonValueKind.String)
+                return el.GetString();
         }
         return null;
     }
 
-    private static object? ExtractUser(JsonElement root)
+    private static bool TryGetByPath(JsonElement current, ReadOnlySpan<string> parts, out JsonElement found)
     {
-        if (root.TryGetProperty("data", out var d))
+        found = current;
+        foreach (var p in parts)
+            if (found.ValueKind != JsonValueKind.Object || !found.TryGetProperty(p, out found)) return false;
+        return true;
+    }
+
+    private static string? ExtractTokenFallback(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Object)
         {
-            if (d.TryGetProperty("user", out var u) && u.ValueKind == JsonValueKind.Object)
-                return JsonSerializer.Deserialize<object>(u.GetRawText());
-            return JsonSerializer.Deserialize<object>(d.GetRawText());
+            foreach (var p in root.EnumerateObject())
+            {
+                if (p.Value.ValueKind == JsonValueKind.String &&
+                    (p.Name.Contains("token", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(p.Name, "session", StringComparison.OrdinalIgnoreCase)))
+                    return p.Value.GetString();
+
+                if (p.Value.ValueKind == JsonValueKind.Object)
+                {
+                    var inner = ExtractTokenFallback(p.Value);
+                    if (!string.IsNullOrWhiteSpace(inner)) return inner;
+                }
+            }
         }
-        if (root.TryGetProperty("user", out var u2) && u2.ValueKind == JsonValueKind.Object)
-            return JsonSerializer.Deserialize<object>(u2.GetRawText());
         return null;
     }
 }

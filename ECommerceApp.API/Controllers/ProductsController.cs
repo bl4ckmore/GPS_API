@@ -23,7 +23,7 @@ public class ProductsController : ControllerBase
         _env = env;
     }
 
-    // ===== list query shape (strings so "undefined"/"null" don't 400)
+    // ===== list query shape
     public sealed class ProductQuery
     {
         public string? page { get; set; }
@@ -34,6 +34,7 @@ public class ProductsController : ControllerBase
         public string? maxPrice { get; set; }
         public string? sort { get; set; }
         public string? isFeatured { get; set; }
+        public string? includeInactive { get; set; }   // NEW
     }
 
     private static string? Norm(string? s)
@@ -66,7 +67,15 @@ public class ProductsController : ControllerBase
         var sort = (Norm(q.sort) ?? "createdAt-desc").ToLowerInvariant();
         var isFeatured = ParseBool(q.isFeatured);
 
-        IQueryable<ProductEntity> query = _db.Products.AsNoTracking().Where(p => p.IsActive);
+        // Allow admins or explicit query flag
+        bool includeInactive =
+            string.Equals(Norm(q.includeInactive), "true", StringComparison.OrdinalIgnoreCase)
+            || User.IsInRole("admin");
+
+        IQueryable<ProductEntity> query = _db.Products.AsNoTracking();
+
+        if (!includeInactive)
+            query = query.Where(p => p.IsActive);
 
         if (isFeatured.HasValue)
             query = query.Where(p => p.IsFeatured == isFeatured.Value);
@@ -132,10 +141,14 @@ public class ProductsController : ControllerBase
     // ===== GET
     [HttpGet("{id:guid}")]
     [AllowAnonymous]
-    public async Task<IActionResult> Get(Guid id)
+    public async Task<IActionResult> Get(Guid id, [FromQuery] bool includeInactive = false)
     {
-        var p = await _db.Products.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.id == id && x.IsActive);
+        var q = _db.Products.AsNoTracking();
+
+        if (!(includeInactive || User.IsInRole("admin")))
+            q = q.Where(x => x.IsActive);
+
+        var p = await q.FirstOrDefaultAsync(x => x.id == id);
         return p is null ? NotFound() : Ok(p);
     }
 
@@ -203,7 +216,7 @@ public class ProductsController : ControllerBase
     [AllowAnonymous]
     public async Task<int> Count() => await _db.Products.CountAsync(p => p.IsActive);
 
-    // ===== UPLOAD (admin) — Swagger-safe
+    // ===== UPLOAD (admin)
     public sealed class UploadDto
     {
         public IFormFile? file { get; set; } // FormData key must be "file"
@@ -240,7 +253,6 @@ public class ProductsController : ControllerBase
         await using (var fs = System.IO.File.Create(fullPath))
             await file.CopyToAsync(fs);
 
-        // include PathBase (/API)
         var pathBase = Request.PathBase.HasValue ? Request.PathBase.Value : string.Empty;
         var relPath = $"{pathBase}/uploads/products/{y}/{m}/{fileName}";
         var absoluteUrl = $"{Request.Scheme}://{Request.Host}{relPath}";

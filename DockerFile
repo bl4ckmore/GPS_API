@@ -1,17 +1,35 @@
-# ----- build stage -----
+# ---------- Build stage ----------
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
-# copy everything and build
-COPY . .
-RUN dotnet restore
-RUN dotnet publish -c Release -o /app/out
 
-# ----- runtime stage -----
+# Copy csproj files first (improves caching)
+COPY ECommerceApp.API/ECommerceApp.API.csproj ECommerceApp.API/
+COPY ECommerceApp.Application/ECommerceApp.Application.csproj ECommerceApp.Application/
+COPY ECommerceApp.Core/ECommerceApp.Core.csproj ECommerceApp.Core/
+COPY ECommerceApp.Infrastructure/ECommerceApp.Infrastructure.csproj ECommerceApp.Infrastructure/
+COPY ECommerceApp.sln ./
+
+# Restore
+RUN dotnet restore ECommerceApp.sln
+
+# Copy the rest of the source
+COPY . .
+
+# Publish only the API project
+RUN dotnet publish ECommerceApp.API/ECommerceApp.API.csproj -c Release -o /app/out
+
+# ---------- Runtime stage ----------
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
+
+# Copy published output
 COPY --from=build /app/out .
-# Render provides PORT env var; make Kestrel listen on it
+
+# Render sets PORT env var; bind Kestrel to it
 ENV ASPNETCORE_URLS=http://0.0.0.0:${PORT}
-# (Optional) enable container-friendly thread pool
-ENV DOTNET_ReadyToRun=0
-ENTRYPOINT ["dotnet", "YourApiApp.dll"]
+
+# (optional) smaller image optimizations
+ENV DOTNET_EnableDiagnostics=0
+ENV DOTNET_gcServer=1
+
+ENTRYPOINT ["dotnet", "ECommerceApp.API.dll"]

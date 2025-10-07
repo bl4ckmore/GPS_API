@@ -2,12 +2,12 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# Copy csproj files first (improves caching)
+# Copy solution and project files first (cache-friendly)
+COPY ECommerceApp.sln ./
 COPY ECommerceApp.API/ECommerceApp.API.csproj ECommerceApp.API/
 COPY ECommerceApp.Application/ECommerceApp.Application.csproj ECommerceApp.Application/
 COPY ECommerceApp.Core/ECommerceApp.Core.csproj ECommerceApp.Core/
 COPY ECommerceApp.Infrastructure/ECommerceApp.Infrastructure.csproj ECommerceApp.Infrastructure/
-COPY ECommerceApp.sln ./
 
 # Restore
 RUN dotnet restore ECommerceApp.sln
@@ -19,17 +19,18 @@ COPY . .
 RUN dotnet publish ECommerceApp.API/ECommerceApp.API.csproj -c Release -o /app/out
 
 # ---------- Runtime stage ----------
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 
 # Copy published output
 COPY --from=build /app/out .
 
-# Render sets PORT env var; bind Kestrel to it
+# Render provides PORT; bind Kestrel to it
 ENV ASPNETCORE_URLS=http://0.0.0.0:${PORT}
 
-# (optional) smaller image optimizations
+# (Optional) small hardening/perf tweaks
 ENV DOTNET_EnableDiagnostics=0
 ENV DOTNET_gcServer=1
 
+# The DLL name must match your API project's output
 ENTRYPOINT ["dotnet", "ECommerceApp.API.dll"]

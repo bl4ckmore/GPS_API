@@ -28,10 +28,8 @@ builder.Services.AddHttpClient("whats", c =>
 // ===== Caching
 builder.Services.AddMemoryCache();
 
-// ===== CORS =====
+// ===== CORS
 const string CorsPolicy = "ng-prod";
-
-// List of allowed origins for frontend access
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
                      ?? new[]
                      {
@@ -39,7 +37,6 @@ var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get
                          "https://gps-v3-angular.vercel.app",
                          "https://gps-v3-angular-do5e39g32-giorgis-projects-3d217a4c.vercel.app"
                      };
-
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(CorsPolicy, policy =>
@@ -56,7 +53,6 @@ var cs = builder.Configuration.GetConnectionString("Default")
 var dsb = new NpgsqlDataSourceBuilder(cs);
 dsb.EnableDynamicJson();
 var dataSource = dsb.Build();
-
 builder.Services.AddDbContext<ApplicationDbContext>(opt => opt.UseNpgsql(dataSource));
 
 // ===== Controllers
@@ -93,8 +89,6 @@ builder.Services
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = signingKey,
             ClockSkew = TimeSpan.FromMinutes(2),
-
-            // IMPORTANT: use the standard Role claim; we’ll normalize other shapes below
             RoleClaimType = ClaimTypes.Role,
             NameClaimType = ClaimTypes.NameIdentifier
         };
@@ -129,7 +123,6 @@ builder.Services.AddSwaggerGen(c =>
         BearerFormat = "JWT"
     });
 
-    // So IFormFile appears as file upload input (and avoids the generator crash)
     c.MapType<IFormFile>(() => new OpenApiSchema { Type = "string", Format = "binary" });
 });
 
@@ -138,30 +131,12 @@ RegisterIfFound<IWhatsSessionStore>(builder.Services);
 
 var app = builder.Build();
 
-// ===== PathBase (/API) to match your EC_API_BASE
-var apiBase = "/API";
-app.UsePathBase(apiBase);
-
-// Dev redirect "/" -> "/API/swagger"
-if (app.Environment.IsDevelopment())
-{
-    app.Use(async (ctx, next) =>
-    {
-        if (string.Equals(ctx.Request.Path, "/", StringComparison.OrdinalIgnoreCase))
-        {
-            ctx.Response.Redirect($"{apiBase}/swagger");
-            return;
-        }
-        await next();
-    });
-}
-
 // ===== Static files
 var webRoot = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
 Directory.CreateDirectory(webRoot);
 Directory.CreateDirectory(Path.Combine(webRoot, "uploads"));
 
-app.UseStaticFiles(); // serves /API/* (because of PathBase)
+app.UseStaticFiles();
 app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new PhysicalFileProvider(Path.Combine(webRoot, "uploads")),
@@ -169,29 +144,22 @@ app.UseStaticFiles(new StaticFileOptions
     ServeUnknownFileTypes = true
 });
 
-if (app.Environment.IsDevelopment())
+// ===== Swagger (enabled in prod too)
+app.UseSwagger();
+app.UseSwaggerUI(c =>
 {
-    app.UseSwagger(c =>
-    {
-        c.RouteTemplate = "swagger/{documentName}/swagger.json";
-        c.PreSerializeFilters.Add((swagger, req) =>
-        {
-            swagger.Servers = new List<OpenApiServer> {
-                new OpenApiServer { Url = $"{req.Scheme}://{req.Host.Value}{apiBase}" }
-            };
-        });
-    });
-    app.UseSwaggerUI(c =>
-    {
-        c.SwaggerEndpoint($"{apiBase}/swagger/v1/swagger.json", "ECommerceApp API v1");
-        c.RoutePrefix = "swagger";
-    });
-}
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "ECommerceApp API v1");
+    c.RoutePrefix = "swagger";
+});
 
 app.UseRouting();
 app.UseCors(CorsPolicy);
 app.UseAuthentication();
 app.UseAuthorization();
+
+// ===== Health + root
+app.MapGet("/health", () => Results.Ok("OK"));
+app.MapGet("/", () => Results.Redirect("/swagger"));
 
 app.MapControllers();
 
@@ -220,8 +188,6 @@ static void RegisterIfFound<TService>(IServiceCollection services)
         throw new InvalidOperationException($"No implementation of {iface.FullName} found in Infrastructure.");
 }
 
-// Normalizes roles so "Admin"/"admin" are available as ClaimTypes.Role,
-// and also copies from tokens that use "role"/"roles".
 public sealed class RoleNormalizer : IClaimsTransformation
 {
     public Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)

@@ -28,16 +28,25 @@ builder.Services.AddHttpClient("whats", c =>
 // ===== Caching
 builder.Services.AddMemoryCache();
 
-// ===== CORS
-const string CorsPolicy = "ng-dev";
+// ===== CORS =====
+const string CorsPolicy = "ng-prod";
+
+// List of allowed origins for frontend access
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-                     ?? new[] { "http://localhost:4200" };
-builder.Services.AddCors(o =>
+                     ?? new[]
+                     {
+                         "http://localhost:4200",
+                         "https://gps-v3-angular.vercel.app",
+                         "https://gps-v3-angular-do5e39g32-giorgis-projects-3d217a4c.vercel.app"
+                     };
+
+builder.Services.AddCors(options =>
 {
-    o.AddPolicy(CorsPolicy, p =>
-        p.WithOrigins(allowedOrigins)
-         .AllowAnyHeader()
-         .AllowAnyMethod());
+    options.AddPolicy(CorsPolicy, policy =>
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials());
 });
 
 // ===== PostgreSQL + EF Core

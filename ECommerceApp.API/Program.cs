@@ -12,6 +12,8 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Npgsql;
+using ECommerceApp.Core.Interfaces;           
+using ECommerceApp.Infrastructure.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,6 +29,10 @@ builder.Services.AddHttpClient("whats", c =>
 
 // ===== Caching
 builder.Services.AddMemoryCache();
+
+// Carts 
+
+builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 
 // ===== CORS
 const string CorsPolicy = "ng-prod";

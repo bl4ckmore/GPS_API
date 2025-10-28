@@ -2,14 +2,17 @@
 using ECommerceApp.Core.Entities;
 using ECommerceApp.Core.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using System.Threading;
+using System.Threading.Tasks;
 
 
 namespace ECommerceApp.API.Controllers;
 
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/cart")] // FIX 1: Fixes the 404 by matching Angular's /api/cart
 public class CartsController : ControllerBase
 {
+    // The DI container will now know how to inject this due to the Program.cs fix
     private readonly IGenericRepository<Cart> _carts;
 
     public CartsController(IGenericRepository<Cart> carts)
@@ -17,18 +20,18 @@ public class CartsController : ControllerBase
         _carts = carts;
     }
 
-    [HttpGet]
+    [HttpGet] // Now resolves to: GET /api/cart
     public async Task<IActionResult> GetAll(CancellationToken ct) =>
         Ok(await _carts.GetAllAsync(ct));
-    
-    [HttpGet("{id:guid}")]
+
+    [HttpGet("{id:guid}")] // Resolves to: GET /api/cart/{id}
     public async Task<IActionResult> GetById(Guid id, CancellationToken ct)
     {
         var cart = await _carts.GetByIdAsync(id, ct);
         return cart is null ? NotFound() : Ok(cart);
     }
 
-    [HttpPost]
+    [HttpPost] // Now resolves to: POST /api/cart
     public async Task<IActionResult> Create(ProductDto dto)
     {
         if (dto == null)
@@ -42,7 +45,7 @@ public class CartsController : ControllerBase
         return Ok(created);
     }
 
-    [HttpPut("{id}")]
+    [HttpPut("{id}")] // Resolves to: PUT /api/cart/{id}
     public async Task<IActionResult> Update(int id, ProductDto dto)
     {
         if (dto == null)
@@ -59,7 +62,7 @@ public class CartsController : ControllerBase
         return Ok(dto);
     }
 
-    [HttpDelete("{id}")]
+    [HttpDelete("{id}")] // Resolves to: DELETE /api/cart/{id}
     public async Task<IActionResult> Delete(int id)
     {
         // TODO: delete logic
@@ -68,6 +71,6 @@ public class CartsController : ControllerBase
         if (!deleted)
             return NotFound();
 
-        return NoContent();
+        return NoContent(); // Correct status for a successful delete
     }
 }

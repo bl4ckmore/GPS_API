@@ -13,6 +13,9 @@ public class ApplicationDbContext : DbContext
     public DbSet<AppUser> Users => Set<AppUser>();
     public DbSet<UserLogin> UserLogins => Set<UserLogin>();
 
+    public DbSet<Cart> Carts => Set<Cart>();
+    public DbSet<CartItem> CartItems => Set<CartItem>();
+
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);

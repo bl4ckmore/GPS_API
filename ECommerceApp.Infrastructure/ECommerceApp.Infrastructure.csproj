@@ -5,10 +5,12 @@
   <ItemGroup>
     <ProjectReference Include="..\ECommerceApp.Core\ECommerceApp.Core.csproj" />
     <ProjectReference Include="..\ECommerceApp.Application\ECommerceApp.Application.csproj" />
+	  
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.66" />
+    <PackageReference Include="MailKit" Version="4.14.1" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.20" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.20">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

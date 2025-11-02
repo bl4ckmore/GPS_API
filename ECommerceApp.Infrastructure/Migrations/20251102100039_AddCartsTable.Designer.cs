@@ -158,7 +158,7 @@ namespace ECommerceApp.Infrastructure.Migrations
                     b.Property<int>("Quantity")
                         .HasColumnType("integer");
 
-                    b.Property<decimal>("UnitPrice")
+                    b.Property<decimal>("unitPrice")
                         .HasColumnType("numeric");
 
                     b.Property<DateTime?>("UpdatedAt")
@@ -319,7 +319,7 @@ namespace ECommerceApp.Infrastructure.Migrations
                     b.Property<int>("Quantity")
                         .HasColumnType("integer");
 
-                    b.Property<decimal>("UnitPrice")
+                    b.Property<decimal>("unitPrice")
                         .HasColumnType("numeric");
 
                     b.Property<DateTime?>("UpdatedAt")

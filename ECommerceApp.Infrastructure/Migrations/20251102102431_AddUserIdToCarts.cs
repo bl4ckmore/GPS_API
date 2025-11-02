@@ -50,7 +50,7 @@ namespace ECommerceApp.Infrastructure.Migrations
                 table: "CartItems");
 
             migrationBuilder.DropColumn(
-                name: "UnitPrice",
+                name: "unitPrice",
                 table: "CartItems");
 
             migrationBuilder.RenameColumn(
@@ -92,7 +92,7 @@ namespace ECommerceApp.Infrastructure.Migrations
                 nullable: true);
 
             migrationBuilder.AddColumn<decimal>(
-                name: "UnitPrice",
+                name: "unitPrice",
                 table: "CartItems",
                 type: "numeric",
                 nullable: false,
@@ -244,7 +244,7 @@ namespace ECommerceApp.Infrastructure.Migrations
                     ProductName = table.Column<string>(type: "text", nullable: false),
                     ProductSKU = table.Column<string>(type: "text", nullable: false),
                     Quantity = table.Column<int>(type: "integer", nullable: false),
-                    UnitPrice = table.Column<decimal>(type: "numeric", nullable: false),
+                    unitPrice = table.Column<decimal>(type: "numeric", nullable: false),
                     UpdatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true)
                 },
                 constraints: table =>

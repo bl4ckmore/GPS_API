@@ -1,26 +1,31 @@
-﻿using System.Net;
+﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
+using System.Net.Http;
+
+// App interfaces
 using ECommerceApp.Application.Interfaces; // IWhatsSessionStore
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
 
 namespace ECommerceApp.API.Controllers;
 
 [ApiController]
-[Route("api/whatsgps")]
-[Authorize]
+[Route("api/whatsgps/proxy")]
 public class WhatsGpsProxyController : ControllerBase
 {
-    private readonly IHttpClientFactory _httpFactory;
-    private readonly IWhatsSessionStore _session; // from Application
+    private readonly IHttpClientFactory _http;
+    private readonly ILogger<WhatsGpsProxyController> _logger;
+    private readonly IWhatsSessionStore _session;
 
-    public WhatsGpsProxyController(IHttpClientFactory httpFactory, IWhatsSessionStore session)
+    public WhatsGpsProxyController(
+        IHttpClientFactory http,
+        ILogger<WhatsGpsProxyController> logger,
+        IWhatsSessionStore session)
     {
-        _httpFactory = httpFactory;
+        _http = http;
+        _logger = logger;
         _session = session;
     }
 
+    // Example passthrough (adjust to your actual proxy endpoints)
     [HttpGet("ping")]
     public IActionResult Ping() => Ok(new { ok = true });
-
-    // Add your upstream-proxy endpoints here and use _session to read vendor token/cookie
 }

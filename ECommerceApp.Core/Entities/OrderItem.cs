@@ -1,18 +1,16 @@
-using ECommerceApp.Core.Entities;
-
-
 namespace ECommerceApp.Core.Entities;
 
-public class  OrderItem : BaseEntity {
+public class OrderItem : BaseEntity
+{
+    // BaseEntity: id, CreatedAt, UpdatedAt, IsDeleted, DeletedAt
+
     public Guid OrderId { get; set; }
-    public Order? Order { get; set; } = null; 
     public Guid ProductId { get; set; }
-    public Product? Product { get; set; } = null;
-    public string ProductName { get; set; } = string.Empty;
-    public string ProductSKU { get; set; } = string.Empty; 
-    public int Quantity { get; set; }
-    public decimal UnitPrice { get; set; }
-    public decimal TotalPrice => Quantity * UnitPrice;
-    public string? CustomizationData { get; set; }
-    
+
+    public int qty { get; set; }                // keep same casing you use in CartItem
+    public decimal unitPrice { get; set; }
+
+    public string? title { get; set; }
+    public string? imageUrl { get; set; }
+    public string? sku { get; set; }
 }

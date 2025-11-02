@@ -7,45 +7,92 @@ public class ApplicationDbContext : DbContext
 {
     public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options) { }
 
-    public DbSet<Product> Products => Set<Product>();
-    public DbSet<Category> Categories => Set<Category>();
-
     public DbSet<AppUser> Users => Set<AppUser>();
-    public DbSet<UserLogin> UserLogins => Set<UserLogin>();
-
+    public DbSet<Product> Products => Set<Product>();
     public DbSet<Cart> Carts => Set<Cart>();
     public DbSet<CartItem> CartItems => Set<CartItem>();
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<OrderItem> OrderItems => Set<OrderItem>();
+    public DbSet<Category> Categories => Set<Category>();
 
-    protected override void OnModelCreating(ModelBuilder b)
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        base.OnModelCreating(b);
+        base.OnModelCreating(modelBuilder);
 
-        b.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
+        // pick up IEntityTypeConfiguration<T> in this assembly (e.g., ProductConfiguration)
+        modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
 
-        // Products (arrays/jsonb are supported by Npgsql)
-        b.Entity<Product>(e =>
+        // Product
+        modelBuilder.Entity<Product>(e =>
         {
-            e.Property(p => p.Features).HasColumnType("text[]");
-            e.Property(p => p.Images).HasColumnType("text[]");
-            e.Property(p => p.Parameters).HasColumnType("jsonb");
+            e.HasKey(x => x.id);
+            // if your Product has Price (PascalCase), keep this next line;
+            // if it's lower-case 'price', change to x.price
+            e.Property(x => x.Price).HasColumnType("numeric(18,2)");
+            e.Property(x => x.CategoryId).HasColumnType("uuid").IsRequired(false);
+            e.HasIndex(x => x.CategoryId);
         });
 
-        // Users
-        b.Entity<AppUser>(e =>
+        // Category (key is 'id', not 'Id')
+        modelBuilder.Entity<Category>(e =>
         {
-            e.ToTable("users");
-            e.HasIndex(u => u.Username).IsUnique();
-            e.Property(u => u.Username).HasMaxLength(128);
+            e.HasKey(x => x.id);
+            e.Property(x => x.Name).HasMaxLength(200);
+            e.Property(x => x.Slug).HasMaxLength(200);
         });
 
-        // Login audit
-        b.Entity<UserLogin>(e =>
+        // Cart
+        modelBuilder.Entity<Cart>(e =>
         {
-            e.ToTable("user_logins");
+            e.HasKey(x => x.id);
+            e.HasIndex(x => new { x.UserId, x.IsDeleted });
+        });
+
+        // CartItem — your entity uses lower-case 'qty' and 'unitPrice'
+        modelBuilder.Entity<CartItem>(e =>
+        {
+            e.HasKey(x => x.id);
+
+            e.Property(x => x.qty).HasDefaultValue(1);
+            e.Property(x => x.unitPrice).HasColumnType("numeric(18,2)");
+
+            e.HasIndex(x => x.CartId);
+            e.HasIndex(x => x.ProductId);
+            e.HasIndex(x => new { x.CartId, x.IsDeleted });
+
+            e.HasOne(x => x.Cart)
+             .WithMany()                 // use .WithMany(c => c.Items) if Cart has Items
+             .HasForeignKey(x => x.CartId)
+             .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasOne(x => x.Product)
+             .WithMany()
+             .HasForeignKey(x => x.ProductId)
+             .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // Order
+        modelBuilder.Entity<Order>(e =>
+        {
+            e.HasKey(x => x.id);
+            e.Property(x => x.Subtotal).HasColumnType("numeric(18,2)");
+            e.Property(x => x.Shipping).HasColumnType("numeric(18,2)");
+            e.Property(x => x.Discount).HasColumnType("numeric(18,2)");
+            e.Property(x => x.Tax).HasColumnType("numeric(18,2)");
+            e.Property(x => x.Total).HasColumnType("numeric(18,2)");
             e.HasIndex(x => new { x.UserId, x.CreatedAt });
-            e.Property(x => x.Provider).HasMaxLength(64);
-            e.Property(x => x.Username).HasMaxLength(128);
-            e.Property(x => x.IpAddress).HasMaxLength(64);
+        });
+
+        // OrderItem — lower-case 'qty' and 'unitPrice'
+        modelBuilder.Entity<OrderItem>(e =>
+        {
+            e.HasKey(x => x.id);
+            e.Property(x => x.unitPrice).HasColumnType("numeric(18,2)");
+            e.Property(x => x.qty).HasDefaultValue(1);
+
+            e.HasIndex(x => x.OrderId);
+            e.HasIndex(x => x.ProductId);
+            e.HasIndex(x => new { x.OrderId, x.ProductId });
         });
     }
 }

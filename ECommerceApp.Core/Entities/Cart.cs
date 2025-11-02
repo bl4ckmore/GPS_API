@@ -1,14 +1,7 @@
-// ECommerceApp.Core.Entities/Cart.cs
+namespace ECommerceApp.Core.Entities;
 
-using System;
-
-namespace ECommerceApp.Core.Entities
+public class Cart : BaseEntity
 {
-    public class Cart : BaseEntity 
-    {
-
-        public Guid UserId { get; set; }
-
-        
-    }
+    public Guid UserId { get; set; }
+    // Remove local IsDeleted — we already inherit IsDeleted from BaseEntity
 }

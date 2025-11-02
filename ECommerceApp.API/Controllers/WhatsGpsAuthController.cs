@@ -1,9 +1,12 @@
 ﻿using System.Net;
 using System.Text.Json;
-using ECommerceApp.Application.Interfaces;   // IJwtTokenService, IWhatsSessionStore
-using ECommerceApp.Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+
+// Core / App
+using ECommerceApp.Application.Interfaces;              // IJwtTokenService, IWhatsSessionStore
+using ECommerceApp.Infrastructure.Data;                // ApplicationDbContext
 
 namespace ECommerceApp.API.Controllers;
 
@@ -14,7 +17,7 @@ public class WhatsGpsAuthController : ControllerBase
     private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<WhatsGpsAuthController> _logger;
     private readonly IJwtTokenService _jwt;
-    private readonly IWhatsSessionStore _session;   // <-- from Application
+    private readonly IWhatsSessionStore _session;
     private readonly IConfiguration _cfg;
     private readonly ApplicationDbContext _db;
 
@@ -84,11 +87,11 @@ public class WhatsGpsAuthController : ControllerBase
 
             var username = dto.Name!.Trim();
 
-            // ensure local user exists (simplified)
+            // ensure local user exists (simplified example)
             var user = await _db.Users.SingleOrDefaultAsync(u => u.Username == username);
             if (user is null)
             {
-                user = new Core.Entities.AppUser
+                user = new ECommerceApp.Core.Entities.AppUser
                 {
                     id = Guid.NewGuid(),
                     Username = username,
@@ -100,10 +103,10 @@ public class WhatsGpsAuthController : ControllerBase
             user.LastLoginAt = DateTime.UtcNow;
             await _db.SaveChangesAsync();
 
-            // store vendor token
+            // store vendor token for proxy use
             _session.Set(username, vendorToken, DateTimeOffset.UtcNow.AddHours(8));
 
-            // local JWT
+            // issue local JWT
             var jwt = _jwt.Create(username, user.IsAdmin ? "Admin" : "User", user.IsAdmin ? 2 : 1);
 
             return Ok(new
@@ -120,7 +123,7 @@ public class WhatsGpsAuthController : ControllerBase
         }
     }
 
-    // helpers
+    // --- helpers ---
     private static HttpRequestMessage BuildRequest(string method, string bodyFormat, string path, Dictionary<string, string?> fields)
     {
         path = path.TrimStart('/');

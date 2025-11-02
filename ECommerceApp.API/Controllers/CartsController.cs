@@ -1,6 +1,5 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
-using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using ECommerceApp.Infrastructure.Data;
 using ECommerceApp.Core.Entities;
@@ -35,15 +34,11 @@ public sealed class CartsController : ControllerBase
         _log = log;
     }
 
-    // =========================================================================
-    // READ CURRENT USER CART
-    // =========================================================================
-
-    // Alias: GET /api/carts  -> same as GET /api/carts/me  (fixes 405 from frontend)
+    // GET /api/carts (alias)
     [HttpGet]
     public Task<IActionResult> GetMyCartAlias(CancellationToken ct) => GetMyCart(ct);
 
-    // Main: GET /api/carts/me
+    // GET /api/carts/me
     [HttpGet("me")]
     public async Task<IActionResult> GetMyCart(CancellationToken ct)
     {
@@ -51,27 +46,25 @@ public sealed class CartsController : ControllerBase
         if (userId == Guid.Empty)
             return Unauthorized(new { error = "Cannot resolve user from JWT" });
 
-        var cartId = await _db.Carts.AsNoTracking()
-            .Where(c => c.UserId == userId)
-            .Select(c => c.id)
-            .FirstOrDefaultAsync(ct);
-
-        if (cartId == Guid.Empty)
-            return Ok(new CartViewDto { id = Guid.Empty, items = new() });
+        var cart = await _db.Carts.AsNoTracking().FirstOrDefaultAsync(c => c.UserId == userId, ct);
+        if (cart is null) return Ok(new CartViewDto());
 
         var items = await _db.CartItems
-            .Where(ci => ci.CartId == cartId)
+            .Where(ci => ci.CartId == cart.id)
             .Join(_db.Products, ci => ci.ProductId, p => p.id, (ci, p) => new { ci, p })
             .Select(x => new CartItemViewDto
             {
                 id = x.ci.id,
-                quantity = x.ci.Quantity,
+                quantity = x.ci.qty, // <-- entity uses `qty`
                 product = new ProductBriefDto
                 {
                     id = x.p.id,
                     name = x.p.Name,
-                    price = (decimal?)(x.p.Price) ?? 0m,
+                    title = x.p.Name,             // legacy alias
+                    sku = x.p.SKU,
+                    price = x.p.Price,            // non-nullable decimal
                     imageUrl = x.p.ImageUrl ?? "",
+                    mainImageUrl = x.p.ImageUrl ?? "", // legacy alias
                     category = x.p.Category != null ? x.p.Category.Name : null,
                     type = x.p.Type,
                     stock = (int?)(x.p.Stock) ?? 0
@@ -79,10 +72,12 @@ public sealed class CartsController : ControllerBase
             })
             .ToListAsync(ct);
 
-        return Ok(new CartViewDto { id = cartId, items = items });
+        var dto = new CartViewDto { id = cart.id, items = items };
+        dto.RecalculateTotals();
+        return Ok(dto);
     }
 
-    // Optional admin/debug: GET /api/carts/all  (moved from bare [HttpGet] to avoid conflict)
+    // GET /api/carts/all
     [HttpGet("all")]
     public async Task<IActionResult> GetAll(CancellationToken ct)
     {
@@ -90,7 +85,7 @@ public sealed class CartsController : ControllerBase
         return Ok(all);
     }
 
-    // Optional: GET /api/carts/{id}
+    // GET /api/carts/{id}
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetById(Guid id, CancellationToken ct)
     {
@@ -98,17 +93,15 @@ public sealed class CartsController : ControllerBase
         return cart is null ? NotFound() : Ok(cart);
     }
 
-    // =========================================================================
-    // WRITE OPERATIONS
-    // =========================================================================
-
-    // POST /api/carts/items   (add or merge)
+    // POST /api/carts/items
     [HttpPost("items")]
-    public async Task<IActionResult> AddItem([FromBody] AddItemRequestDto dto, CancellationToken ct)
+    public async Task<IActionResult> AddItem([FromBody] AddItemRequestDto body, CancellationToken ct)
     {
-        if (dto is null) return BadRequest(new { error = "Body required" });
-        if (dto.ProductId == Guid.Empty) return BadRequest(new { error = "productId invalid" });
-        if (dto.Quantity <= 0) return BadRequest(new { error = "quantity must be > 0" });
+        if (body is null) return BadRequest(new { error = "Body required" });
+        if (body.ProductId == Guid.Empty) return BadRequest(new { error = "productId invalid" });
+
+        var qtyToAdd = body.Quantity ?? body.Qty ?? 0;
+        if (qtyToAdd <= 0) return BadRequest(new { error = "quantity must be > 0" });
 
         var userId = await ResolveUserIdAsync(ct);
         if (userId == Guid.Empty) return Unauthorized(new { error = "Cannot resolve user from JWT" });
@@ -120,35 +113,36 @@ public sealed class CartsController : ControllerBase
             await _db.Carts.AddAsync(cart, ct);
         }
 
-        var existing = await _db.CartItems.FirstOrDefaultAsync(
-            i => i.CartId == cart.id && i.ProductId == dto.ProductId, ct);
+        var existing = await _db.CartItems
+            .FirstOrDefaultAsync(i => i.CartId == cart.id && i.ProductId == body.ProductId, ct);
 
         if (existing is not null)
         {
-            existing.Quantity += dto.Quantity;
+            existing.qty += qtyToAdd; // <-- use qty
         }
         else
         {
-            var newItem = new CartItem
+            await _db.CartItems.AddAsync(new CartItem
             {
                 id = Guid.NewGuid(),
                 CartId = cart.id,
-                ProductId = dto.ProductId,
-                Quantity = dto.Quantity
-            };
-            await _db.CartItems.AddAsync(newItem, ct);
+                ProductId = body.ProductId,
+                qty = qtyToAdd
+            }, ct);
         }
 
         await _db.SaveChangesAsync(ct);
-        return await GetMyCart(ct);
+        var cartDto = await BuildCartForUser(userId, ct);
+        return Ok(new { message = "Added to cart", cart = cartDto });
     }
 
-    // PATCH /api/carts/items/{itemId}   (update quantity)
+    // PATCH /api/carts/items/{itemId}
     [HttpPatch("items/{itemId:guid}")]
-    public async Task<IActionResult> UpdateItem(Guid itemId, [FromBody] UpdateQtyDto dto, CancellationToken ct)
+    public async Task<IActionResult> UpdateItem(Guid itemId, [FromBody] UpdateQtyDto body, CancellationToken ct)
     {
-        if (dto is null || dto.quantity <= 0)
-            return BadRequest(new { error = "quantity must be > 0" });
+        if (body is null) return BadRequest(new { error = "Body required" });
+        var newQty = body.Quantity ?? body.Qty ?? 0;
+        if (newQty <= 0) return BadRequest(new { error = "quantity must be > 0" });
 
         var userId = await ResolveUserIdAsync(ct);
         if (userId == Guid.Empty) return Unauthorized(new { error = "Cannot resolve user from JWT" });
@@ -161,10 +155,11 @@ public sealed class CartsController : ControllerBase
 
         if (item is null) return NotFound();
 
-        item.Quantity = dto.quantity;
+        item.qty = newQty; // <-- use qty
         await _db.SaveChangesAsync(ct);
 
-        return await GetMyCart(ct);
+        var cartDto = await BuildCartForUser(userId, ct);
+        return Ok(new { message = "Quantity updated", cart = cartDto });
     }
 
     // DELETE /api/carts/items/{itemId}
@@ -185,10 +180,11 @@ public sealed class CartsController : ControllerBase
         _db.CartItems.Remove(item);
         await _db.SaveChangesAsync(ct);
 
-        return await GetMyCart(ct);
+        var cartDto = await BuildCartForUser(userId, ct);
+        return Ok(new { message = "Removed from cart", cart = cartDto });
     }
 
-    // DELETE /api/carts   (clear my cart)
+    // DELETE /api/carts (clear)
     [HttpDelete]
     public async Task<IActionResult> ClearCart(CancellationToken ct)
     {
@@ -201,18 +197,49 @@ public sealed class CartsController : ControllerBase
             .FirstOrDefaultAsync(ct);
 
         if (cartId == Guid.Empty)
-            return Ok(new CartViewDto { id = Guid.Empty, items = new() });
+            return Ok(new { message = "Cart is already empty", cart = new CartViewDto() });
 
         var items = _db.CartItems.Where(i => i.CartId == cartId);
         _db.CartItems.RemoveRange(items);
         await _db.SaveChangesAsync(ct);
 
-        return Ok(new CartViewDto { id = cartId, items = new() });
+        return Ok(new { message = "Cart cleared", cart = new CartViewDto { id = cartId } });
     }
 
-    // =========================================================================
-    // HELPERS
-    // =========================================================================
+    // ---------------- helpers ----------------
+
+    private async Task<CartViewDto> BuildCartForUser(Guid userId, CancellationToken ct)
+    {
+        var cart = await _db.Carts.AsNoTracking().FirstOrDefaultAsync(c => c.UserId == userId, ct);
+        if (cart is null) return new CartViewDto();
+
+        var items = await _db.CartItems
+            .Where(ci => ci.CartId == cart.id)
+            .Join(_db.Products, ci => ci.ProductId, p => p.id, (ci, p) => new { ci, p })
+            .Select(x => new CartItemViewDto
+            {
+                id = x.ci.id,
+                quantity = x.ci.qty, // <-- use qty
+                product = new ProductBriefDto
+                {
+                    id = x.p.id,
+                    name = x.p.Name,
+                    title = x.p.Name,
+                    sku = x.p.SKU,
+                    price = x.p.Price,                 // non-null
+                    imageUrl = x.p.ImageUrl ?? "",
+                    mainImageUrl = x.p.ImageUrl ?? "",
+                    category = x.p.Category != null ? x.p.Category.Name : null,
+                    type = x.p.Type,
+                    stock = (int?)(x.p.Stock) ?? 0
+                }
+            })
+            .ToListAsync(ct);
+
+        var dto = new CartViewDto { id = cart.id, items = items };
+        dto.RecalculateTotals();
+        return dto;
+    }
 
     private async Task<Guid> ResolveUserIdAsync(CancellationToken ct)
     {
@@ -232,19 +259,38 @@ public sealed class CartsController : ControllerBase
     }
 }
 
-// ================== DTOs returned/accepted by this controller ==================
+// ---------------- DTOs + totals ----------------
+
 public sealed class AddItemRequestDto
 {
     [Required] public Guid ProductId { get; set; }
-    [Range(1, int.MaxValue)] public int Quantity { get; set; }
+    public int? Quantity { get; set; } // accept both names
+    public int? Qty { get; set; }
 }
 
-public sealed class UpdateQtyDto { public int quantity { get; set; } }
+public sealed class UpdateQtyDto
+{
+    public int? Quantity { get; set; }
+    public int? Qty { get; set; }
+}
 
 public sealed class CartViewDto
 {
     public Guid id { get; set; }
     public List<CartItemViewDto> items { get; set; } = new();
+
+    public decimal subtotal { get; set; }
+    public decimal tax { get; set; }
+    public decimal shipping { get; set; }
+    public decimal total { get; set; }
+
+    public void RecalculateTotals(decimal taxRate = 0m, decimal shippingFlat = 0m)
+    {
+        subtotal = items.Sum(i => (i.product?.price ?? 0m) * i.quantity);
+        tax = Math.Round(subtotal * taxRate, 2);
+        shipping = items.Any() ? shippingFlat : 0m;
+        total = subtotal + tax + shipping;
+    }
 }
 
 public sealed class CartItemViewDto
@@ -263,4 +309,9 @@ public sealed class ProductBriefDto
     public string? category { get; set; }
     public string? type { get; set; }
     public int stock { get; set; }
+
+    // legacy aliases for existing Angular bindings
+    public string? title { get; set; }
+    public string? sku { get; set; }
+    public string? mainImageUrl { get; set; }
 }

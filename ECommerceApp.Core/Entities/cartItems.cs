@@ -1,20 +1,21 @@
-// ECommerceApp.Core.Entities/CartItem.cs (Example structure)
-
 using System;
 
 namespace ECommerceApp.Core.Entities
 {
-    // FIX: Inherit from BaseEntity
-    public class CartItem : BaseEntity // <--- ADD THIS INHERITANCE
+    // Inherits your existing BaseEntity in the same namespace.
+    // Do NOT redeclare 'id', CreatedAt, etc.—they come from BaseEntity.
+    public class CartItem : BaseEntity
     {
-        // public Guid id { get; set; } // May need to remove if BaseEntity provides it
-
+        // Foreign keys
         public Guid CartId { get; set; }
-        public Cart Cart { get; set; } = default!;
-
         public Guid ProductId { get; set; }
-        public int Quantity { get; set; }
 
-       
+        // Business fields (camelCase to match the rest of your code)
+        public int qty { get; set; } = 1;
+        public decimal unitPrice { get; set; } = 0m;
+
+        // Navigations (optional)
+        public Cart? Cart { get; set; }
+        public Product? Product { get; set; }
     }
 }

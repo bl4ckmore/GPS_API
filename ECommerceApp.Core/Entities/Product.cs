@@ -1,58 +1,40 @@
-﻿using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations.Schema;
+﻿using System;
+using System.Collections.Generic;
 
 namespace ECommerceApp.Core.Entities
 {
     public class Product : BaseEntity
     {
-        // Flags
-        public bool IsActive { get; set; } = true;
-        public bool IsFeatured { get; set; } = false;
-
-        // Identity / naming
-        public string Name { get; set; } = default!;
+        // Required basics (ensure these already exist in your file; add if missing)
+        public new Guid id { get; set; }                // keep your existing key shape
+        public string Name { get; set; } = string.Empty;
         public string? SKU { get; set; }
-
-        // Descriptions
         public string? Description { get; set; }
         public string? LongDescription { get; set; }
 
-        // Pricing
-        public decimal? Price { get; set; }
-        public decimal? CompareAtPrice { get; set; }
-        public decimal? SalePrice { get; set; }
+        // ✅ ADD these price fields so Seeder + Configuration compile
+        public decimal Price { get; set; }                     // required
+        public decimal? CompareAtPrice { get; set; }           // optional
+        public decimal? SalePrice { get; set; }                // optional
 
-        // Inventory / physical
-        public int Stock { get; set; } = 0;
+        public int Stock { get; set; }
         public decimal? Weight { get; set; }
 
-        // Category (navigation, not string)
+        public bool IsActive { get; set; } = true;
+        public bool IsFeatured { get; set; }
+
+        // Category
         public Guid? CategoryId { get; set; }
         public Category? Category { get; set; }
 
-        // Optional FE convenience
+        // Optional extras the seeder/config use (add if not present)
         public string? Type { get; set; }
-
-        // Media
-        public string[]? Images { get; set; }
         public string? ImageUrl { get; set; }
+        public string[]? Images { get; set; }                   // mapped as text[] in config
+        public string[]? Features { get; set; }                 // mapped as text[] in config
+        public Dictionary<string, string>? Parameters { get; set; } // mapped as jsonb
 
-        // Specs / features
-        public string[]? Features { get; set; }
-
-        // 🔹 This is the property the alias below needs
-        public Dictionary<string, string>? Parameters { get; set; }
-
-        // Ratings
         public double? Rating { get; set; }
         public int? ReviewCount { get; set; }
-
-        // 🔹 Back-compat alias for old code expecting 'Attributes'
-        [NotMapped]
-        public Dictionary<string, string>? Attributes
-        {
-            get => Parameters;
-            set => Parameters = value;
-        }
     }
 }

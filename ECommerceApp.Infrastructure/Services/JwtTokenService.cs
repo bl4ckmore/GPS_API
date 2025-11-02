@@ -1,44 +1,95 @@
-﻿using System.IdentityModel.Tokens.Jwt;             
+﻿using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using Microsoft.Extensions.Configuration;
-using Microsoft.IdentityModel.Tokens;              
 using System.Text;
-using ECommerceApp.Application.Interfaces;         
+using ECommerceApp.Application.Interfaces; // IJwtTokenService
+using Microsoft.Extensions.Configuration;
+using Microsoft.IdentityModel.Tokens;
 
 namespace ECommerceApp.Infrastructure.Services
 {
-    public class JwtTokenService : IJwtTokenService
+    /// <summary>
+    /// JWT minting service compatible with IJwtTokenService.Create(string, string, int).
+    ///  - arg1: subject (username/userId)
+    ///  - arg2: audience (or role name; we store it as audience and also as "roleName" claim)
+    ///  - arg3: roleId (1=user, 2=admin)
+    ///
+    /// Reads config keys:
+    ///   Auth:Jwt:Key (or Jwt:Key), Auth:Jwt:Issuer, Auth:Jwt:Audience
+    /// </summary>
+    public sealed class JwtTokenService : IJwtTokenService
     {
-        private readonly IConfiguration _cfg;
-        public JwtTokenService(IConfiguration cfg) => _cfg = cfg;
+        private readonly SymmetricSecurityKey _key;
+        private readonly string? _issuer;
+        private readonly string? _audienceDefault;
 
-        public string Create(string subject, string roleName, int roleId)
+        public JwtTokenService(IConfiguration cfg)
         {
-            var sec = _cfg.GetSection("Jwt");
-            var key = sec["Key"]!;
-            var issuer = sec["Issuer"];
-            var audience = sec["Audience"];
-            var minutes = int.TryParse(sec["AccessTokenMinutes"], out var m) ? m : 120;
+            var key = cfg["Auth:Jwt:Key"] ?? cfg["Jwt:Key"];
+            if (string.IsNullOrWhiteSpace(key))
+                throw new InvalidOperationException("JWT key missing. Set Auth:Jwt:Key or Jwt:Key.");
 
+            _key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key));
+            _issuer = cfg["Auth:Jwt:Issuer"];
+            _audienceDefault = cfg["Auth:Jwt:Audience"];
+        }
+
+        /// <summary>
+        /// Interface-required signature: Create(subject, audienceOrRoleName, roleId)
+        /// </summary>
+        public string Create(string subject, string audienceOrRoleName, int roleId)
+        {
+            // Prefer provided audience; fall back to configured default.
+            var audience = string.IsNullOrWhiteSpace(audienceOrRoleName) ? _audienceDefault : audienceOrRoleName;
+
+            var extra = new Dictionary<string, string>
+            {
+                { "roleName", string.IsNullOrWhiteSpace(audienceOrRoleName) ? (roleId == 2 ? "Admin" : "User") : audienceOrRoleName }
+            };
+
+            return CreateToken(
+                subject: subject,
+                roleId: roleId,
+                audienceOverride: audience,
+                extraClaims: extra,
+                lifetime: TimeSpan.FromHours(24));
+        }
+
+        // Optional convenience if other parts of your code call Create(subject, roleId)
+        public string Create(string subject, int roleId)
+            => CreateToken(subject, roleId, _audienceDefault, null, TimeSpan.FromHours(24));
+
+        // ---- Internal flexible creator ----
+        private string CreateToken(
+            string subject,
+            int roleId,
+            string? audienceOverride,
+            IDictionary<string, string>? extraClaims,
+            TimeSpan? lifetime)
+        {
             var claims = new List<Claim>
             {
                 new(JwtRegisteredClaimNames.Sub, subject),
                 new(ClaimTypes.NameIdentifier, subject),
                 new(ClaimTypes.Name, subject),
-                new(ClaimTypes.Role, roleName),
-                new("roleId", roleId.ToString()),
-                new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N"))
+                new(ClaimTypes.Role, roleId == 2 ? "Admin" : "User"),
+                new("roleId", roleId.ToString())
             };
 
-            var creds = new SigningCredentials(
-                new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key)),
-                SecurityAlgorithms.HmacSha256);
+            if (extraClaims != null)
+            {
+                foreach (var kv in extraClaims)
+                    claims.Add(new Claim(kv.Key, kv.Value));
+            }
+
+            var creds = new SigningCredentials(_key, SecurityAlgorithms.HmacSha256);
+            var expires = DateTime.UtcNow.Add(lifetime ?? TimeSpan.FromHours(24));
 
             var token = new JwtSecurityToken(
-                issuer: issuer,
-                audience: audience,
+                issuer: _issuer,
+                audience: audienceOverride,
                 claims: claims,
-                expires: DateTime.UtcNow.AddMinutes(minutes),
+                notBefore: DateTime.UtcNow,
+                expires: expires,
                 signingCredentials: creds);
 
             return new JwtSecurityTokenHandler().WriteToken(token);

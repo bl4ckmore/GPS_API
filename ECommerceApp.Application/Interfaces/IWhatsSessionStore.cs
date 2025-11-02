@@ -1,9 +1,9 @@
-﻿namespace ECommerceApp.Application.Interfaces
+﻿namespace ECommerceApp.Infrastructure.Whats
 {
     public interface IWhatsSessionStore
     {
-        void Set(string appUserId, string vendorToken, DateTimeOffset? expires = null);
-        string? Get(string appUserId);
-        void Remove(string appUserId);
+        string? Get(string key);
+        void Set(string key, string value, DateTimeOffset? expiresAt = null);
+        void Remove(string key);
     }
 }

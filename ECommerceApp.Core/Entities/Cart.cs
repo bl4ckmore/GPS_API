@@ -1,14 +1,15 @@
-using ECommerceApp.Core.Entities;
+// ECommerceApp.Core.Entities/Cart.cs
 
+using System;
 
-namespace ECommerceApp.Core.Entities;
-
-
-public class Cart : BaseEntity
+namespace ECommerceApp.Core.Entities
 {
-    public Guid UserSessionId { get; set; }
-    public UserSession? UserSession { get; set; } = null;
-    public ICollection<CartItem> Items { get; set; } = new List<CartItem>();
-    public decimal TotalAmount => Items.Sum(x => x.Quantity * x.UnitPrice);
-    public int TotalItems => Items.Sum(x=>x.Quantity);
+    public class Cart : BaseEntity 
+    {
+
+        public Guid UserId { get; set; }
+
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    }
 }

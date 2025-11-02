@@ -16,6 +16,7 @@ using ECommerceApp.Infrastructure.Email;
 
 
 
+
 var builder = WebApplication.CreateBuilder(args);
 
 // ---------- PostgreSQL + EF Core ----------
@@ -57,6 +58,21 @@ builder.Services.AddHttpClient("whats", c =>
 {
     AllowAutoRedirect = false,
     AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+});
+
+
+//
+const string CorsPolicy = "ng";
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?? new[] { "http://localhost:4200", "https://gps-v3-angular.vercel.app" };
+
+builder.Services.AddCors(opt =>
+{
+    opt.AddPolicy(CorsPolicy, p =>
+        p.WithOrigins(allowedOrigins)
+         .AllowAnyHeader()
+         .AllowAnyMethod()
+         .AllowCredentials()); // only keep if you actually send cookies; safe if you only send Authorization header too
 });
 
 // ---------- Whats session store (in-memory) ----------
@@ -145,6 +161,7 @@ app.UseSwagger();
 app.UseSwaggerUI();
 
 app.UseRouting();
+app.UseCors("ng");
 app.UseCors(CorsPolicy);
 app.UseAuthentication();
 app.UseAuthorization();

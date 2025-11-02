@@ -1,5 +1,5 @@
 ﻿using System.Net;
-using ECommerceApp.Infrastructure.Whats;
+using ECommerceApp.Application.Interfaces; // IWhatsSessionStore
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -7,41 +7,20 @@ namespace ECommerceApp.API.Controllers;
 
 [ApiController]
 [Route("api/whatsgps")]
-[Authorize] // შენი JWT-ით დაცული
-public sealed class WhatsGpsProxyController : ControllerBase
+[Authorize]
+public class WhatsGpsProxyController : ControllerBase
 {
-    private readonly IHttpClientFactory _http;
-    private readonly IWhatsSessionStore _store;
-    private readonly ILogger<WhatsGpsProxyController> _log;
+    private readonly IHttpClientFactory _httpFactory;
+    private readonly IWhatsSessionStore _session; // from Application
 
-    public WhatsGpsProxyController(IHttpClientFactory http, IWhatsSessionStore store, ILogger<WhatsGpsProxyController> log)
+    public WhatsGpsProxyController(IHttpClientFactory httpFactory, IWhatsSessionStore session)
     {
-        _http = http;
-        _store = store;
-        _log = log;
+        _httpFactory = httpFactory;
+        _session = session;
     }
 
-    [HttpGet("echo")]
-    public async Task<IActionResult> Echo([FromQuery] string path, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-            return BadRequest(new { error = "path required" });
+    [HttpGet("ping")]
+    public IActionResult Ping() => Ok(new { ok = true });
 
-        var client = _http.CreateClient("whats");
-        var cookie = _store.Get("whats.session");
-        if (!string.IsNullOrWhiteSpace(cookie))
-            client.DefaultRequestHeaders.Add("Cookie", cookie);
-
-        using var req = new HttpRequestMessage(HttpMethod.Get, path);
-        using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-        var body = await resp.Content.ReadAsStringAsync(ct);
-
-        if (resp.StatusCode != HttpStatusCode.OK)
-        {
-            _log.LogWarning("WhatsGPS proxy {Path} failed: {Status}", path, resp.StatusCode);
-            return StatusCode(StatusCodes.Status502BadGateway, new { error = "proxy failed", upstreamStatus = (int)resp.StatusCode });
-        }
-
-        return Content(body, "application/json");
-    }
+    // Add your upstream-proxy endpoints here and use _session to read vendor token/cookie
 }

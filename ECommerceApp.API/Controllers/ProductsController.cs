@@ -23,7 +23,6 @@ public class ProductsController : ControllerBase
         _env = env;
     }
 
-    // ===== list query shape
     public sealed class ProductQuery
     {
         public string? page { get; set; }
@@ -34,7 +33,7 @@ public class ProductsController : ControllerBase
         public string? maxPrice { get; set; }
         public string? sort { get; set; }
         public string? isFeatured { get; set; }
-        public string? includeInactive { get; set; }   // NEW
+        public string? includeInactive { get; set; }
     }
 
     private static string? Norm(string? s)
@@ -67,10 +66,9 @@ public class ProductsController : ControllerBase
         var sort = (Norm(q.sort) ?? "createdAt-desc").ToLowerInvariant();
         var isFeatured = ParseBool(q.isFeatured);
 
-        // Allow admins or explicit query flag
         bool includeInactive =
             string.Equals(Norm(q.includeInactive), "true", StringComparison.OrdinalIgnoreCase)
-            || User.IsInRole("admin");
+            || User.IsInRole("Admin");
 
         IQueryable<ProductEntity> query = _db.Products.AsNoTracking();
 
@@ -145,7 +143,7 @@ public class ProductsController : ControllerBase
     {
         var q = _db.Products.AsNoTracking();
 
-        if (!(includeInactive || User.IsInRole("admin")))
+        if (!(includeInactive || User.IsInRole("Admin")))
             q = q.Where(x => x.IsActive);
 
         var p = await q.FirstOrDefaultAsync(x => x.id == id);
@@ -154,7 +152,7 @@ public class ProductsController : ControllerBase
 
     // ===== CREATE (admin)
     [HttpPost]
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Create([FromBody] ProductEntity body)
     {
         body.id = Guid.NewGuid();
@@ -169,7 +167,7 @@ public class ProductsController : ControllerBase
 
     // ===== UPDATE (admin)
     [HttpPut("{id:guid}")]
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Update(Guid id, [FromBody] ProductEntity body)
     {
         var p = await _db.Products.FirstOrDefaultAsync(x => x.id == id);
@@ -200,7 +198,7 @@ public class ProductsController : ControllerBase
 
     // ===== DELETE (admin)
     [HttpDelete("{id:guid}")]
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id)
     {
         var p = await _db.Products.FirstOrDefaultAsync(x => x.id == id);
@@ -223,7 +221,7 @@ public class ProductsController : ControllerBase
     }
 
     [HttpPost("upload")]
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "Admin")]
     [Consumes("multipart/form-data")]
     [RequestSizeLimit(10_000_000)]
     public async Task<IActionResult> Upload([FromForm] UploadDto dto)

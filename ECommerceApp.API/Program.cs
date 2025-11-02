@@ -1,11 +1,11 @@
 ﻿using System.Net;
 using System.Text;
-using ECommerceApp.Application.Interfaces;       // IJwtTokenService
-using ECommerceApp.Core.Interfaces;             // IGenericRepository<T>
+using ECommerceApp.Application.Interfaces;       // IJwtTokenService, IWhatsSessionStore
+using ECommerceApp.Core.Interfaces;             // IGenericRepository<>
 using ECommerceApp.Infrastructure.Data;         // ApplicationDbContext
-using ECommerceApp.Infrastructure.Repositories; // GenericRepository<T>
+using ECommerceApp.Infrastructure.Repositories; // GenericRepository<>
 using ECommerceApp.Infrastructure.Services;     // JwtTokenService
-using ECommerceApp.Infrastructure.Whats;        // IWhatsSessionStore, InMemoryWhatsSessionStore
+using ECommerceApp.Infrastructure.Whats;        // InMemoryWhatsSessionStore
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -14,7 +14,7 @@ using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ---------- PostgreSQL + EF Core (Enable Dynamic JSON for jsonb <-> Dictionary) ----------
+// --- PostgreSQL + Dynamic JSON ---
 var cs = builder.Configuration.GetConnectionString("Default")
          ?? throw new InvalidOperationException("ConnectionStrings:Default is missing.");
 var dsb = new NpgsqlDataSourceBuilder(cs);
@@ -23,44 +23,41 @@ var dataSource = dsb.Build();
 
 builder.Services.AddDbContext<ApplicationDbContext>(opt => opt.UseNpgsql(dataSource));
 
-// ---------- Controllers ----------
+// Controllers
 builder.Services.AddControllers();
 
-// ---------- CORS ----------
+// CORS
 const string CorsPolicy = "ng";
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
                      ?? new[] { "http://localhost:4200" };
 builder.Services.AddCors(opt =>
 {
-    opt.AddPolicy(CorsPolicy, p =>
-        p.WithOrigins(allowedOrigins)
-         .AllowAnyHeader()
-         .AllowAnyMethod()
-         .AllowCredentials());
+    opt.AddPolicy(CorsPolicy, p => p
+        .WithOrigins(allowedOrigins)
+        .AllowAnyHeader()
+        .AllowAnyMethod()
+        .AllowCredentials());
 });
 
-// ---------- HttpClient factory (named: "whats") ----------
-builder.Services.AddHttpClient(); // general factory
+// HttpClient factory
+builder.Services.AddHttpClient();
 builder.Services.AddHttpClient("whats", c =>
 {
     var baseUrl = builder.Configuration["WhatsGps:BaseUrl"] ?? "https://www.whatsgps.com";
     c.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
-    // Accept HTML or JSON depending on upstream behavior
-    c.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7");
+    c.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
     c.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "ECommerceApp/1.0 (+http://localhost)");
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
 {
-    // Often useful when capturing Set-Cookie on login flows; your auth controller
-    // may use its own handler with CookieContainer, but keeping this helps for proxies.
     AllowAutoRedirect = false,
     AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
 });
 
-// ---------- Whats session store (in-memory) ----------
+// Whats session store: bind Application interface -> Infrastructure implementation
 builder.Services.AddSingleton<IWhatsSessionStore, InMemoryWhatsSessionStore>();
 
-// ---------- JWT (single source of truth) ----------
+// JWT
 var jwtKey = builder.Configuration["Auth:Jwt:Key"] ?? builder.Configuration["Jwt:Key"];
 if (string.IsNullOrWhiteSpace(jwtKey))
     throw new InvalidOperationException("JWT key missing. Set Auth:Jwt:Key or Jwt:Key.");
@@ -78,7 +75,7 @@ builder.Services.AddAuthentication(o =>
 })
 .AddJwtBearer(o =>
 {
-    o.RequireHttpsMetadata = false; // dev
+    o.RequireHttpsMetadata = false;
     o.SaveToken = true;
     o.TokenValidationParameters = new TokenValidationParameters
     {
@@ -92,13 +89,13 @@ builder.Services.AddAuthentication(o =>
 
 builder.Services.AddAuthorization();
 
-// ---------- JWT minting service ----------
+// JWT minting service
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 
-// ---------- Open-generic repository DI ----------
+// Open-generic repository
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 
-// ---------- Swagger (Bearer) ----------
+// Swagger
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -126,7 +123,6 @@ builder.Services.AddSwaggerGen(c =>
 
 var app = builder.Build();
 
-// ---------- Pipeline ----------
 app.UseSwagger();
 app.UseSwaggerUI();
 

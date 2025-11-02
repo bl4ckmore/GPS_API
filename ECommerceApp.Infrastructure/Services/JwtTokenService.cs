@@ -12,9 +12,6 @@ namespace ECommerceApp.Infrastructure.Services
     ///  - arg1: subject (username/userId)
     ///  - arg2: audience (or role name; we store it as audience and also as "roleName" claim)
     ///  - arg3: roleId (1=user, 2=admin)
-    ///
-    /// Reads config keys:
-    ///   Auth:Jwt:Key (or Jwt:Key), Auth:Jwt:Issuer, Auth:Jwt:Audience
     /// </summary>
     public sealed class JwtTokenService : IJwtTokenService
     {
@@ -28,37 +25,31 @@ namespace ECommerceApp.Infrastructure.Services
             if (string.IsNullOrWhiteSpace(key))
                 throw new InvalidOperationException("JWT key missing. Set Auth:Jwt:Key or Jwt:Key.");
 
-            _key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key));
+            var bytes = Encoding.UTF8.GetBytes(key);
+            if (bytes.Length < 32)
+                throw new InvalidOperationException($"JWT key too short: {bytes.Length} bytes. HS256 requires >= 32 bytes.");
+
+            _key = new SymmetricSecurityKey(bytes);
             _issuer = cfg["Auth:Jwt:Issuer"];
             _audienceDefault = cfg["Auth:Jwt:Audience"];
         }
 
-        /// <summary>
-        /// Interface-required signature: Create(subject, audienceOrRoleName, roleId)
-        /// </summary>
+        // Required signature: (subject, audienceOrRoleName, roleId)
         public string Create(string subject, string audienceOrRoleName, int roleId)
         {
-            // Prefer provided audience; fall back to configured default.
             var audience = string.IsNullOrWhiteSpace(audienceOrRoleName) ? _audienceDefault : audienceOrRoleName;
-
             var extra = new Dictionary<string, string>
             {
                 { "roleName", string.IsNullOrWhiteSpace(audienceOrRoleName) ? (roleId == 2 ? "Admin" : "User") : audienceOrRoleName }
             };
 
-            return CreateToken(
-                subject: subject,
-                roleId: roleId,
-                audienceOverride: audience,
-                extraClaims: extra,
-                lifetime: TimeSpan.FromHours(24));
+            return CreateToken(subject, roleId, audience, extra, TimeSpan.FromHours(24));
         }
 
-        // Optional convenience if other parts of your code call Create(subject, roleId)
+        // Convenience
         public string Create(string subject, int roleId)
             => CreateToken(subject, roleId, _audienceDefault, null, TimeSpan.FromHours(24));
 
-        // ---- Internal flexible creator ----
         private string CreateToken(
             string subject,
             int roleId,
@@ -76,10 +67,8 @@ namespace ECommerceApp.Infrastructure.Services
             };
 
             if (extraClaims != null)
-            {
                 foreach (var kv in extraClaims)
                     claims.Add(new Claim(kv.Key, kv.Value));
-            }
 
             var creds = new SigningCredentials(_key, SecurityAlgorithms.HmacSha256);
             var expires = DateTime.UtcNow.Add(lifetime ?? TimeSpan.FromHours(24));

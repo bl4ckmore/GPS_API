@@ -1,4 +1,4 @@
-namespace ECommerceApp.Application.Interfaces;
+namespace ECommerceApp.Infrastructure.Email;
 
 public interface IEmailSender
 {

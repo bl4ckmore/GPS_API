@@ -11,6 +11,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Npgsql;
+using ECommerceApp.Infrastructure.Email;
+
+
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -93,6 +97,12 @@ builder.Services.AddAuthorization();
 // ---------- Services & Repos ----------
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
+
+// ---------- Email ----------
+builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection("Email"));
+builder.Services.AddScoped<IEmailSender, MailKitEmailSender>();
+
+
 
 // ---------- Swagger ----------
 builder.Services.AddEndpointsApiExplorer();

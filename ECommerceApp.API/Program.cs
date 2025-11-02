@@ -1,61 +1,75 @@
-﻿using System.Text;
-using ECommerceApp.Application.Interfaces;
-using ECommerceApp.Infrastructure.Auth;
-using ECommerceApp.Infrastructure.Data;
-using ECommerceApp.Infrastructure.Whats;
+﻿using System.Net;
+using System.Text;
+using ECommerceApp.Application.Interfaces;       // IJwtTokenService
+using ECommerceApp.Core.Interfaces;             // IGenericRepository<T>
+using ECommerceApp.Infrastructure.Data;         // ApplicationDbContext
+using ECommerceApp.Infrastructure.Repositories; // GenericRepository<T>
+using ECommerceApp.Infrastructure.Services;     // JwtTokenService
+using ECommerceApp.Infrastructure.Whats;        // IWhatsSessionStore, InMemoryWhatsSessionStore
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Npgsql;
-using ECommerceApp.Infrastructure.Repositories;
-using ECommerceApp.Core.Interfaces; // <-- added
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- PostgreSQL + EF Core with Dynamic JSON enabled (fixes jsonb -> Dictionary<string,string>) ---
+// ---------- PostgreSQL + EF Core (Enable Dynamic JSON for jsonb <-> Dictionary) ----------
 var cs = builder.Configuration.GetConnectionString("Default")
          ?? throw new InvalidOperationException("ConnectionStrings:Default is missing.");
 var dsb = new NpgsqlDataSourceBuilder(cs);
-dsb.EnableDynamicJson();            // <— IMPORTANT for jsonb <-> Dictionary<string,string>
+dsb.EnableDynamicJson();
 var dataSource = dsb.Build();
 
 builder.Services.AddDbContext<ApplicationDbContext>(opt => opt.UseNpgsql(dataSource));
 
-// Controllers
+// ---------- Controllers ----------
 builder.Services.AddControllers();
 
-// CORS
+// ---------- CORS ----------
 const string CorsPolicy = "ng";
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
                      ?? new[] { "http://localhost:4200" };
 builder.Services.AddCors(opt =>
 {
-    opt.AddPolicy(CorsPolicy, p => p.WithOrigins(allowedOrigins)
-                                    .AllowAnyHeader()
-                                    .AllowAnyMethod()
-                                    .AllowCredentials());
+    opt.AddPolicy(CorsPolicy, p =>
+        p.WithOrigins(allowedOrigins)
+         .AllowAnyHeader()
+         .AllowAnyMethod()
+         .AllowCredentials());
 });
 
-// === HttpClient factory + Whats named client ===
-builder.Services.AddHttpClient();
+// ---------- HttpClient factory (named: "whats") ----------
+builder.Services.AddHttpClient(); // general factory
 builder.Services.AddHttpClient("whats", c =>
 {
     var baseUrl = builder.Configuration["WhatsGps:BaseUrl"] ?? "https://www.whatsgps.com";
     c.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
-    c.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
+    // Accept HTML or JSON depending on upstream behavior
+    c.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7");
     c.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "ECommerceApp/1.0 (+http://localhost)");
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    // Often useful when capturing Set-Cookie on login flows; your auth controller
+    // may use its own handler with CookieContainer, but keeping this helps for proxies.
+    AllowAutoRedirect = false,
+    AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
 });
 
-// === Whats session store (in-memory) ===
+// ---------- Whats session store (in-memory) ----------
 builder.Services.AddSingleton<IWhatsSessionStore, InMemoryWhatsSessionStore>();
 
-// ===== JWT (single source of truth) =====
+// ---------- JWT (single source of truth) ----------
 var jwtKey = builder.Configuration["Auth:Jwt:Key"] ?? builder.Configuration["Jwt:Key"];
 if (string.IsNullOrWhiteSpace(jwtKey))
     throw new InvalidOperationException("JWT key missing. Set Auth:Jwt:Key or Jwt:Key.");
 
-var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
+var keyBytes = Encoding.UTF8.GetBytes(jwtKey);
+if (keyBytes.Length < 32)
+    throw new InvalidOperationException($"JWT key too short: {keyBytes.Length} bytes. HS256 requires >= 32 bytes.");
+
+var signingKey = new SymmetricSecurityKey(keyBytes);
 
 builder.Services.AddAuthentication(o =>
 {
@@ -68,30 +82,30 @@ builder.Services.AddAuthentication(o =>
     o.SaveToken = true;
     o.TokenValidationParameters = new TokenValidationParameters
     {
-        ValidateIssuer = false,
-        ValidateAudience = false,
         ValidateIssuerSigningKey = true,
         IssuerSigningKey = signingKey,
+        ValidateIssuer = false,
+        ValidateAudience = false,
         ClockSkew = TimeSpan.FromMinutes(2)
     };
 });
 
 builder.Services.AddAuthorization();
 
-// JWT minting service
+// ---------- JWT minting service ----------
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 
-// 🔽 OPEN-GENERIC REPOSITORY REGISTRATION (this fixes IGenericRepository<T> DI)
+// ---------- Open-generic repository DI ----------
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 
-// Swagger (Bearer)
+// ---------- Swagger (Bearer) ----------
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "ECommerceApp API", Version = "v1" });
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
-        Description = "Paste RAW JWT (no 'Bearer ' prefix).",
+        Description = "Paste RAW JWT here (no 'Bearer ' prefix).",
         Name = "Authorization",
         In = ParameterLocation.Header,
         Type = SecuritySchemeType.Http,
@@ -100,12 +114,19 @@ builder.Services.AddSwaggerGen(c =>
     });
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
-        { new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } }, Array.Empty<string>() }
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
+            },
+            Array.Empty<string>()
+        }
     });
 });
 
 var app = builder.Build();
 
+// ---------- Pipeline ----------
 app.UseSwagger();
 app.UseSwaggerUI();
 

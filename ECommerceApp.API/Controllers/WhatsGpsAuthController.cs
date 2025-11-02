@@ -1,7 +1,9 @@
 ﻿using System.Net;
 using System.Text.Json;
-using ECommerceApp.Application.Interfaces;
-using ECommerceApp.Infrastructure.Data;
+using ECommerceApp.Application.Interfaces;      // IJwtTokenService
+using ECommerceApp.Infrastructure.Data;        // ApplicationDbContext
+using ECommerceApp.Infrastructure.Whats;       // IWhatsSessionStore
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -9,121 +11,131 @@ namespace ECommerceApp.API.Controllers;
 
 [ApiController]
 [Route("api/auth/whatsgps")]
-public class WhatsGpsAuthController : ControllerBase
+[AllowAnonymous]
+public sealed class WhatsGpsAuthController : ControllerBase
 {
-    private readonly IHttpClientFactory _httpFactory;
-    private readonly ILogger<WhatsGpsAuthController> _logger;
+    private readonly IHttpClientFactory _http;
+    private readonly ILogger<WhatsGpsAuthController> _log;
+    private readonly IConfiguration _cfg;
     private readonly IJwtTokenService _jwt;
     private readonly IWhatsSessionStore _session;
-    private readonly IConfiguration _cfg;
     private readonly ApplicationDbContext _db;
 
     public WhatsGpsAuthController(
-        IHttpClientFactory httpFactory,
-        ILogger<WhatsGpsAuthController> logger,
+        IHttpClientFactory http,
+        ILogger<WhatsGpsAuthController> log,
+        IConfiguration cfg,
         IJwtTokenService jwt,
         IWhatsSessionStore session,
-        IConfiguration cfg,
         ApplicationDbContext db)
     {
-        _httpFactory = httpFactory;
-        _logger = logger;
+        _http = http;
+        _log = log;
+        _cfg = cfg;
         _jwt = jwt;
         _session = session;
-        _cfg = cfg;
         _db = db;
     }
 
-    public sealed record LoginDto(string Name, string Password, string? Lang, int? TimeZoneSecond);
+    // DTOs
+    public sealed record LoginDto(string? Name, string? Password, string? Lang, int? TimeZoneSecond);
 
     [HttpPost("login")]
-    public async Task<IActionResult> Login([FromBody] LoginDto dto)
+    public async Task<IActionResult> Login([FromBody] LoginDto dto, CancellationToken ct)
     {
         if (dto is null || string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Password))
             return BadRequest(new { error = "Name and Password are required" });
 
-        var client = _httpFactory.CreateClient("whats");
-        var loginPath = _cfg["WhatsGps:LoginPath"] ?? "user/login.do";
+        var username = dto.Name.Trim();
+
+        // --- Build upstream request from config ---
+        var loginPath = (_cfg["WhatsGps:LoginPath"] ?? "user/login.do").TrimStart('/');
         var method = (_cfg["WhatsGps:Method"] ?? "POST").ToUpperInvariant();
         var bodyFormat = (_cfg["WhatsGps:BodyFormat"] ?? "form").ToLowerInvariant();
         var userField = _cfg["WhatsGps:UsernameField"] ?? "name";
         var passField = _cfg["WhatsGps:PasswordField"] ?? "password";
-        var tokenPaths = _cfg.GetSection("WhatsGps:TokenPaths").Get<string[]>() ?? new[] { "token", "data.token", "data.session" };
-
+        var tokenPaths = _cfg.GetSection("WhatsGps:TokenPaths").Get<string[]>() ?? new[] { "data.token", "token", "data.session" };
         var lang = string.IsNullOrWhiteSpace(dto.Lang) ? "en" : dto.Lang!;
         var tz = dto.TimeZoneSecond ?? (int)(-TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).TotalSeconds);
 
         var fields = new Dictionary<string, string?>
         {
-            [userField] = dto.Name!.Trim(),
+            [userField] = username,
             [passField] = dto.Password!.Trim(),
             ["lang"] = lang,
             ["timeZoneSecond"] = tz.ToString()
         };
 
-        try
+        using var client = _http.CreateClient("whats");
+        using var req = BuildRequest(method, bodyFormat, loginPath, fields);
+        req.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
+
+        using var res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        var text = await res.Content.ReadAsStringAsync(ct);
+
+        if (!res.IsSuccessStatusCode)
         {
-            using var req = BuildRequest(method, bodyFormat, loginPath, fields);
-            req.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
-
-            using var res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
-            var body = await res.Content.ReadAsStringAsync();
-
-            if (!res.IsSuccessStatusCode)
-                return StatusCode((int)res.StatusCode, body);
-
-            var ctype = res.Content.Headers.ContentType?.MediaType ?? "";
-            if (!ctype.Contains("json", StringComparison.OrdinalIgnoreCase))
-                return StatusCode(StatusCodes.Status502BadGateway, new { error = "Upstream returned non-JSON", contentType = ctype });
-
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            var vendorToken = ExtractTokenViaPaths(root, tokenPaths) ?? ExtractTokenFallback(root);
-            if (string.IsNullOrWhiteSpace(vendorToken))
-                return StatusCode(StatusCodes.Status502BadGateway, new { error = "Token missing in upstream JSON" });
-
-            var username = dto.Name!.Trim();
-
-            // ensure local user exists (simplified example)
-            var user = await _db.Users.SingleOrDefaultAsync(u => u.Username == username);
-            if (user is null)
-            {
-                user = new Core.Entities.AppUser
-                {
-                    id = Guid.NewGuid(),
-                    Username = username,
-                    IsAdmin = false,
-                    CreatedAt = DateTime.UtcNow
-                };
-                await _db.Users.AddAsync(user);
-            }
-            user.LastLoginAt = DateTime.UtcNow;
-            await _db.SaveChangesAsync();
-
-            // store vendor token for proxy use
-            _session.Set(username, vendorToken, DateTimeOffset.UtcNow.AddHours(8));
-
-            // issue local JWT
-            var jwt = _jwt.Create(username, user.IsAdmin ? "Admin" : "User", user.IsAdmin ? 2 : 1);
-
-            return Ok(new
-            {
-                jwt,
-                user = new { user.id, user.Username, user.IsAdmin },
-                roleId = user.IsAdmin ? 2 : 1
-            });
+            _log.LogWarning("Upstream login failed: {Status} {Body}", (int)res.StatusCode, text);
+            return Unauthorized(new { error = "Invalid username or password." });
         }
-        catch (Exception ex)
+
+        var ctype = res.Content.Headers.ContentType?.MediaType ?? "";
+        if (!ctype.Contains("json", StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogError(ex, "WhatsGPS login error");
-            return StatusCode(StatusCodes.Status502BadGateway, new { error = "Login proxy error", detail = ex.Message });
+            _log.LogWarning("Upstream returned non-JSON: {CType}", ctype);
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = "Upstream returned non-JSON." });
         }
+
+        // --- Parse JSON & validate success ---
+        using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(text) ? "{}" : text);
+        var root = doc.RootElement;
+
+        // WhatsGPS sample: { "ret":1, "code":"200", "data": { ..., "token": "<JWT>" } }
+        var retOk = (root.TryGetProperty("ret", out var retEl) && (retEl.ValueKind == JsonValueKind.Number && retEl.GetInt32() == 1))
+                    || (root.TryGetProperty("code", out var codeEl) && codeEl.ValueKind == JsonValueKind.String && codeEl.GetString() == "200");
+
+        var upstreamToken = ExtractTokenViaPaths(root, tokenPaths) ?? ExtractTokenFallback(root);
+        if (!retOk || string.IsNullOrWhiteSpace(upstreamToken))
+        {
+            _log.LogWarning("Upstream did not confirm success or token missing. retOk={retOk} tokenNull={tokenNull}", retOk, string.IsNullOrWhiteSpace(upstreamToken));
+            return Unauthorized(new { error = "Invalid username or password." });
+        }
+
+        // --- At this point, credentials are valid upstream. Upsert local user ---
+        var user = await _db.Users.SingleOrDefaultAsync(u => u.Username == username, ct);
+        if (user is null)
+        {
+            user = new ECommerceApp.Core.Entities.AppUser
+            {
+                id = Guid.NewGuid(),
+                Username = username,
+                IsAdmin = false,
+                CreatedAt = DateTime.UtcNow
+            };
+            await _db.Users.AddAsync(user, ct);
+        }
+        user.LastLoginAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        // --- Store upstream token (for future vendor API calls) ---
+        _session.Set(username, upstreamToken!, DateTimeOffset.UtcNow.AddHours(8));
+
+        // --- Mint local JWT tied to this username and local role ---
+        var roleName = user.IsAdmin ? "Admin" : "User";
+        var roleId = user.IsAdmin ? 2 : 1;
+        var jwt = _jwt.Create(username, roleName, roleId);
+
+        return Ok(new
+        {
+            jwt,
+            roleId,
+            user = new { user.id, user.Username, user.IsAdmin }
+        });
     }
 
-    // --- helpers ---
+    // ========== helpers ==========
     private static HttpRequestMessage BuildRequest(string method, string bodyFormat, string path, Dictionary<string, string?> fields)
     {
-        path = path.TrimStart('/');
         if (method == "GET")
             return new HttpRequestMessage(HttpMethod.Get, path + ToQueryString(fields));
 
@@ -164,20 +176,18 @@ public class WhatsGpsAuthController : ControllerBase
 
     private static string? ExtractTokenFallback(JsonElement root)
     {
-        if (root.ValueKind == JsonValueKind.Object)
+        if (root.ValueKind != JsonValueKind.Object) return null;
+        foreach (var p in root.EnumerateObject())
         {
-            foreach (var p in root.EnumerateObject())
-            {
-                if (p.Value.ValueKind == JsonValueKind.String &&
-                    (p.Name.Contains("token", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(p.Name, "session", StringComparison.OrdinalIgnoreCase)))
-                    return p.Value.GetString();
+            if (p.Value.ValueKind == JsonValueKind.String &&
+                (p.Name.Contains("token", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(p.Name, "session", StringComparison.OrdinalIgnoreCase)))
+                return p.Value.GetString();
 
-                if (p.Value.ValueKind == JsonValueKind.Object)
-                {
-                    var inner = ExtractTokenFallback(p.Value);
-                    if (!string.IsNullOrWhiteSpace(inner)) return inner;
-                }
+            if (p.Value.ValueKind == JsonValueKind.Object)
+            {
+                var inner = ExtractTokenFallback(p.Value);
+                if (!string.IsNullOrWhiteSpace(inner)) return inner;
             }
         }
         return null;

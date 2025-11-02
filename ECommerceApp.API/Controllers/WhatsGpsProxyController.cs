@@ -1,7 +1,5 @@
 ﻿using System.Net;
-using System.Security.Claims;
-using ECommerceApp.Application.Interfaces;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+using ECommerceApp.Infrastructure.Whats;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -9,69 +7,41 @@ namespace ECommerceApp.API.Controllers;
 
 [ApiController]
 [Route("api/whatsgps")]
-[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
-public class WhatsGpsProxyController : ControllerBase
+[Authorize] // შენი JWT-ით დაცული
+public sealed class WhatsGpsProxyController : ControllerBase
 {
-    private readonly IHttpClientFactory _httpFactory;
-    private readonly ILogger<WhatsGpsProxyController> _logger;
-    private readonly IWhatsSessionStore _session;
+    private readonly IHttpClientFactory _http;
+    private readonly IWhatsSessionStore _store;
+    private readonly ILogger<WhatsGpsProxyController> _log;
 
-    public WhatsGpsProxyController(
-        IHttpClientFactory httpFactory,
-        ILogger<WhatsGpsProxyController> logger,
-        IWhatsSessionStore session)
+    public WhatsGpsProxyController(IHttpClientFactory http, IWhatsSessionStore store, ILogger<WhatsGpsProxyController> log)
     {
-        _httpFactory = httpFactory;
-        _logger = logger;
-        _session = session;
+        _http = http;
+        _store = store;
+        _log = log;
     }
 
-    public sealed record ProxyDto(string Path, Dictionary<string, string?>? Params);
-
-    [HttpPost("proxy")]
-    public async Task<IActionResult> Proxy([FromBody] ProxyDto payload)
+    [HttpGet("echo")]
+    public async Task<IActionResult> Echo([FromQuery] string path, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(payload?.Path))
-            return BadRequest(new { error = "Path is required" });
+        if (string.IsNullOrWhiteSpace(path))
+            return BadRequest(new { error = "path required" });
 
-        var sub = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.Identity?.Name;
-        if (string.IsNullOrWhiteSpace(sub))
-            return Unauthorized(new { error = "Invalid JWT" });
+        var client = _http.CreateClient("whats");
+        var cookie = _store.Get("whats.session");
+        if (!string.IsNullOrWhiteSpace(cookie))
+            client.DefaultRequestHeaders.Add("Cookie", cookie);
 
-        var vendorToken = _session.Get(sub);
-        if (string.IsNullOrWhiteSpace(vendorToken))
-            return Unauthorized(new { error = "Vendor session expired" });
+        using var req = new HttpRequestMessage(HttpMethod.Get, path);
+        using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        var body = await resp.Content.ReadAsStringAsync(ct);
 
-        var client = _httpFactory.CreateClient("whats");
-        var path = payload.Path.TrimStart('/');
-        var @params = payload.Params ?? new Dictionary<string, string?>();
-        @params["token"] = vendorToken;
-
-        var url = path + ToQueryString(@params);
-
-        try
+        if (resp.StatusCode != HttpStatusCode.OK)
         {
-            using var res = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-            var body = await res.Content.ReadAsStringAsync();
-            return new ContentResult
-            {
-                StatusCode = (int)res.StatusCode,
-                ContentType = "application/json",
-                Content = body
-            };
+            _log.LogWarning("WhatsGPS proxy {Path} failed: {Status}", path, resp.StatusCode);
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = "proxy failed", upstreamStatus = (int)resp.StatusCode });
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "WhatsGPS proxy failed");
-            return Problem("WhatsGPS proxy error: " + ex.Message, statusCode: StatusCodes.Status502BadGateway);
-        }
-    }
 
-    private static string ToQueryString(Dictionary<string, string?> kv)
-    {
-        if (kv == null || kv.Count == 0) return "";
-        var qs = string.Join("&", kv.Where(p => p.Value is not null)
-            .Select(p => $"{WebUtility.UrlEncode(p.Key)}={WebUtility.UrlEncode(p.Value)}"));
-        return "?" + qs;
+        return Content(body, "application/json");
     }
 }

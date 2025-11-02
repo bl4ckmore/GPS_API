@@ -6,16 +6,12 @@ using ECommerceApp.Infrastructure.Data;         // ApplicationDbContext
 using ECommerceApp.Infrastructure.Repositories; // GenericRepository<T>
 using ECommerceApp.Infrastructure.Services;     // JwtTokenService
 using ECommerceApp.Infrastructure.Whats;        // IWhatsSessionStore, InMemoryWhatsSessionStore
+using ECommerceApp.Infrastructure.Email;        // EmailOptions, IEmailSender, MailKitEmailSender
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Npgsql;
-using ECommerceApp.Infrastructure.Email;
-
-
-
-
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -31,10 +27,11 @@ builder.Services.AddDbContext<ApplicationDbContext>(opt => opt.UseNpgsql(dataSou
 // ---------- Controllers ----------
 builder.Services.AddControllers();
 
-// ---------- CORS ----------
+// ---------- CORS (single place) ----------
 const string CorsPolicy = "ng";
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
                      ?? new[] { "http://localhost:4200" };
+
 builder.Services.AddCors(opt =>
 {
     opt.AddPolicy(CorsPolicy, p =>
@@ -58,21 +55,6 @@ builder.Services.AddHttpClient("whats", c =>
 {
     AllowAutoRedirect = false,
     AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
-});
-
-
-//
-const string CorsPolicy = "ng";
-var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-    ?? new[] { "http://localhost:4200", "https://gps-v3-angular.vercel.app" };
-
-builder.Services.AddCors(opt =>
-{
-    opt.AddPolicy(CorsPolicy, p =>
-        p.WithOrigins(allowedOrigins)
-         .AllowAnyHeader()
-         .AllowAnyMethod()
-         .AllowCredentials()); // only keep if you actually send cookies; safe if you only send Authorization header too
 });
 
 // ---------- Whats session store (in-memory) ----------
@@ -118,16 +100,12 @@ builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepositor
 builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection("Email"));
 builder.Services.AddScoped<IEmailSender, MailKitEmailSender>();
 
-
-
 // ---------- Swagger ----------
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     // Make schema IDs unique for nested/duplicate class names
-    c.CustomSchemaIds(t =>
-        // Use full name and replace '+' (nested type sep) with '_'
-        (t.FullName ?? t.Name).Replace('+', '_'));
+    c.CustomSchemaIds(t => (t.FullName ?? t.Name).Replace('+', '_'));
 
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "ECommerceApp API", Version = "v1" });
 
@@ -153,7 +131,6 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-
 var app = builder.Build();
 
 // ---------- Pipeline ----------
@@ -161,8 +138,7 @@ app.UseSwagger();
 app.UseSwaggerUI();
 
 app.UseRouting();
-app.UseCors("ng");
-app.UseCors(CorsPolicy);
+app.UseCors(CorsPolicy);     // ✅ single call
 app.UseAuthentication();
 app.UseAuthorization();
 

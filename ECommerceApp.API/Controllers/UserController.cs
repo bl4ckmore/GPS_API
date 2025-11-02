@@ -3,18 +3,36 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ECommerceApp.Infrastructure.Data;
 using ECommerceApp.Core.Entities;
+using System.Security.Claims; // Needed for FindFirstValue
 
 namespace ECommerceApp.API.Controllers;
 
 [ApiController]
-[Route("api/users")]
-[Authorize(Roles = "Admin")] // RoleNormalizer makes "admin" also valid
+[Route("api/[controller]")] // Resolves to: /api/users
+[Authorize(Roles = "Admin")] // This restriction applies to all actions *except* those marked [AllowAnonymous]
 public class UsersController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
     public UsersController(ApplicationDbContext db) => _db = db;
 
-    [HttpGet]
+    // FIX 3: Moved 'me' logic here to match front-end request GET /api/users/me (Fixes 405)
+    [HttpGet("me")]
+    [AllowAnonymous] // Allow any authenticated user to check their identity
+    public IActionResult Me()
+    {
+        // Check if authentication succeeded at all
+        if (!(User?.Identity?.IsAuthenticated ?? false))
+            return Ok(new { id = (string?)null, username = (string?)null, role = "guest" }); // Returning 'guest' is clearer than 'user' here
+
+        // Extract user claims
+        var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var name = User.FindFirstValue(ClaimTypes.Name) ?? "user";
+        var role = User.FindFirstValue(ClaimTypes.Role) ?? "user";
+
+        return Ok(new { id, username = name, role });
+    }
+
+    [HttpGet] // Maps to: GET /api/users (Requires Admin role)
     public async Task<IActionResult> List()
     {
         var items = await _db.Users
@@ -28,7 +46,7 @@ public class UsersController : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] AppUser body)
     {
-        var u = await _db.Users.FirstOrDefaultAsync(x => x.id == id); // << lower-case id
+        var u = await _db.Users.FirstOrDefaultAsync(x => x.id == id);
         if (u is null) return NotFound();
 
         // Only toggling IsAdmin here; add more fields as needed
@@ -42,7 +60,7 @@ public class UsersController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
     {
-        var u = await _db.Users.FirstOrDefaultAsync(x => x.id == id); // << lower-case id
+        var u = await _db.Users.FirstOrDefaultAsync(x => x.id == id);
         if (u is null) return NotFound();
 
         _db.Users.Remove(u);

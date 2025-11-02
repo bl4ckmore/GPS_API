@@ -1,11 +1,9 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using System.Net;
+﻿using System.Net;
 using System.Text.Json;
-using Microsoft.EntityFrameworkCore;
-using ECommerceApp.Application.DTOs.Auth;
 using ECommerceApp.Application.Interfaces;
 using ECommerceApp.Infrastructure.Data;
-using ECommerceApp.Core.Entities;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace ECommerceApp.API.Controllers;
 
@@ -36,11 +34,15 @@ public class WhatsGpsAuthController : ControllerBase
         _db = db;
     }
 
+    public sealed record LoginDto(string Name, string Password, string? Lang, int? TimeZoneSecond);
+
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginDto dto)
     {
-        var client = _httpFactory.CreateClient("whats");
+        if (dto is null || string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Password))
+            return BadRequest(new { error = "Name and Password are required" });
 
+        var client = _httpFactory.CreateClient("whats");
         var loginPath = _cfg["WhatsGps:LoginPath"] ?? "user/login.do";
         var method = (_cfg["WhatsGps:Method"] ?? "POST").ToUpperInvariant();
         var bodyFormat = (_cfg["WhatsGps:BodyFormat"] ?? "form").ToLowerInvariant();
@@ -53,8 +55,8 @@ public class WhatsGpsAuthController : ControllerBase
 
         var fields = new Dictionary<string, string?>
         {
-            [userField] = dto.Name ?? "",
-            [passField] = dto.Password ?? "",
+            [userField] = dto.Name!.Trim(),
+            [passField] = dto.Password!.Trim(),
             ["lang"] = lang,
             ["timeZoneSecond"] = tz.ToString()
         };
@@ -63,7 +65,6 @@ public class WhatsGpsAuthController : ControllerBase
         {
             using var req = BuildRequest(method, bodyFormat, loginPath, fields);
             req.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
-            req.Headers.TryAddWithoutValidation("User-Agent", "ECommerceApp/1.0 (+http://localhost)");
 
             using var res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
             var body = await res.Content.ReadAsStringAsync();
@@ -77,59 +78,39 @@ public class WhatsGpsAuthController : ControllerBase
 
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
-
-            var token = ExtractTokenViaPaths(root, tokenPaths) ?? ExtractTokenFallback(root);
-            if (string.IsNullOrWhiteSpace(token))
+            var vendorToken = ExtractTokenViaPaths(root, tokenPaths) ?? ExtractTokenFallback(root);
+            if (string.IsNullOrWhiteSpace(vendorToken))
                 return StatusCode(StatusCodes.Status502BadGateway, new { error = "Token missing in upstream JSON" });
 
-            var username = (dto.Name ?? "").Trim();
+            var username = dto.Name!.Trim();
 
-            // Ensure user exists in DB; seed admin from config on first login
+            // ensure local user exists (simplified example)
             var user = await _db.Users.SingleOrDefaultAsync(u => u.Username == username);
             if (user is null)
             {
-                var adminsCfg = _cfg.GetSection("Auth:AdminUsers").Get<string[]>() ?? Array.Empty<string>();
-                var isAdmin = adminsCfg.Any(a => string.Equals(a?.Trim(), username, StringComparison.OrdinalIgnoreCase));
-
-                user = new AppUser
+                user = new Core.Entities.AppUser
                 {
-                    id = Guid.NewGuid(),             // << lower-case id
+                    id = Guid.NewGuid(),
                     Username = username,
-                    IsAdmin = isAdmin,
+                    IsAdmin = false,
                     CreatedAt = DateTime.UtcNow
                 };
                 await _db.Users.AddAsync(user);
             }
             user.LastLoginAt = DateTime.UtcNow;
-
-            // store vendor session (in-memory)
-            _session.Set(username, token);
-
-            // audit login
-            _db.UserLogins.Add(new UserLogin
-            {
-                id = Guid.NewGuid(),               // << lower-case id
-                UserId = user.id,                  // << lower-case id
-                Username = username,
-                Provider = "WhatsGPS",
-                Succeeded = true,
-                IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-                UserAgent = Request.Headers.UserAgent.ToString(),
-                CreatedAt = DateTime.UtcNow
-            });
-
             await _db.SaveChangesAsync();
 
-            var roleName = user.IsAdmin ? "Admin" : "User";
-            var roleId = user.IsAdmin ? 2 : 1;
+            // store vendor token for proxy use
+            _session.Set(username, vendorToken, DateTimeOffset.UtcNow.AddHours(8));
 
-            var jwt = _jwt.Create(username, roleName, roleId);
+            // issue local JWT
+            var jwt = _jwt.Create(username, user.IsAdmin ? "Admin" : "User", user.IsAdmin ? 2 : 1);
+
             return Ok(new
             {
                 jwt,
-                user = new { user.id, user.Username, user.IsAdmin },  // << lower-case id
-                roleId,
-                role = roleName
+                user = new { user.id, user.Username, user.IsAdmin },
+                roleId = user.IsAdmin ? 2 : 1
             });
         }
         catch (Exception ex)
@@ -139,7 +120,7 @@ public class WhatsGpsAuthController : ControllerBase
         }
     }
 
-    // ----- helpers -----
+    // --- helpers ---
     private static HttpRequestMessage BuildRequest(string method, string bodyFormat, string path, Dictionary<string, string?> fields)
     {
         path = path.TrimStart('/');

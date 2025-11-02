@@ -1,11 +1,12 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using ECommerceApp.Core.Interfaces;
 using ECommerceApp.Core.Entities;
+using System.Security.Claims;
 
 namespace ECommerceApp.API.Controllers;
 
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/[controller]")] // Resolves to: /api/Categories
 public class CategoriesController : ControllerBase
 {
     private readonly IGenericRepository<Category> _repo;
@@ -23,6 +24,20 @@ public class CategoriesController : ControllerBase
     {
         var categories = await _repo.GetAllAsync(ct);
         return Ok(categories);
+    }
+
+    // FIX 2: Added action to handle GET /api/Categories/main 404
+    /// <summary>
+    /// Get main/featured categories
+    /// </summary>
+    [HttpGet("main")] // Maps to: GET /api/Categories/main
+    public async Task<ActionResult<IEnumerable<Category>>> GetMainCategories(CancellationToken ct)
+    {
+        var allCategories = await _repo.GetAllAsync(ct);
+
+        // TODO: Add actual filtering logic (e.g., .Where(c => c.IsFeatured))
+
+        return Ok(allCategories.Take(5));
     }
 
     /// <summary>
@@ -48,6 +63,7 @@ public class CategoriesController : ControllerBase
             return BadRequest("Category cannot be null.");
 
         var created = await _repo.AddAsync(category, ct);
+        // Ensure core entity has a property named 'id' that is a Guid
         return CreatedAtAction(nameof(GetById), new { id = created.id }, created);
     }
 

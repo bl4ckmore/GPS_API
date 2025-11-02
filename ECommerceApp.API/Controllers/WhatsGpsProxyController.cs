@@ -1,15 +1,15 @@
-﻿using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using System.Net;
+﻿using System.Net;
 using System.Security.Claims;
-using ECommerceApp.Application.DTOs.WhatsGps;
 using ECommerceApp.Application.Interfaces;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 
 namespace ECommerceApp.API.Controllers;
 
 [ApiController]
-[Authorize] // require our JWT for vendor calls
 [Route("api/whatsgps")]
+[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
 public class WhatsGpsProxyController : ControllerBase
 {
     private readonly IHttpClientFactory _httpFactory;
@@ -26,6 +26,8 @@ public class WhatsGpsProxyController : ControllerBase
         _session = session;
     }
 
+    public sealed record ProxyDto(string Path, Dictionary<string, string?>? Params);
+
     [HttpPost("proxy")]
     public async Task<IActionResult> Proxy([FromBody] ProxyDto payload)
     {
@@ -33,17 +35,17 @@ public class WhatsGpsProxyController : ControllerBase
             return BadRequest(new { error = "Path is required" });
 
         var sub = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.Identity?.Name;
-        if (string.IsNullOrWhiteSpace(sub)) return Unauthorized(new { error = "Invalid JWT" });
+        if (string.IsNullOrWhiteSpace(sub))
+            return Unauthorized(new { error = "Invalid JWT" });
 
         var vendorToken = _session.Get(sub);
         if (string.IsNullOrWhiteSpace(vendorToken))
             return Unauthorized(new { error = "Vendor session expired" });
 
         var client = _httpFactory.CreateClient("whats");
-
         var path = payload.Path.TrimStart('/');
         var @params = payload.Params ?? new Dictionary<string, string?>();
-        @params["token"] = vendorToken; // inject token
+        @params["token"] = vendorToken;
 
         var url = path + ToQueryString(@params);
 

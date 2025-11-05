@@ -96,11 +96,12 @@ public sealed class OrdersController : ControllerBase
             var oi = new OrderItem
             {
                 id = Guid.NewGuid(),
+                // CRITICAL FIX: Rely on navigation property for FK assignment (resolves 23503 error)
                 ProductId = it.ProductId,
                 unitPrice = it.UnitPrice,
                 qty = it.Qty
             };
-            order.Items.Add(oi);
+            order.Items.Add(oi); // Use navigation property to link item to parent order
         }
 
         // Clear cart
@@ -171,7 +172,7 @@ public sealed class OrdersController : ControllerBase
 
 
         // ====================================================================
-        // Email Logging Logic - Part 2: Send and Update Status
+        // Email Logging Logic - Part 2: Send and Update Status (WITH DEBUGGING)
         // ====================================================================
         foreach (var log in logs)
         {
@@ -182,12 +183,16 @@ public sealed class OrdersController : ControllerBase
                 await _email.SendAsync(log.To, log.Subject, htmlContent, ct);
                 log.SentAt = DateTime.UtcNow;
                 log.Status = "Success";
+
+                // 🎯 CONSOLE DEBUG LOGGING: Success message
+                _log.LogInformation("EMAIL DEBUG: Successfully completed send process for order {OrderNumber} to {To}.", orderNumber, log.To);
             }
             catch (Exception ex)
             {
                 log.Status = "Failed";
                 log.ErrorMessage = ex.Message;
-                _log.LogError(ex, "Failed to send email to {To} for order {OrderId}", log.To, log.OrderId);
+                // 🎯 CONSOLE DEBUG LOGGING: Explicit Failure Message
+                _log.LogError(ex, "EMAIL DEBUG: FATAL FAILURE during send process for order {OrderNumber} to {To}.", orderNumber, log.To);
             }
         }
 
@@ -227,18 +232,18 @@ public sealed class OrdersController : ControllerBase
                 o.Shipping,
                 o.Discount,
                 o.CreatedAt,
-                // 💥 NEW: Select a few items with product images for display in history
+                // Select first few items for display
                 OrderItems = o.Items
-                    .Take(3) // Take up to 3 items
+                    .Take(3)
                     .Select(oi => new
                     {
                         oi.qty,
                         Product = _db.Products
                             .Where(p => p.id == oi.ProductId)
-                            .Select(p => new { p.Name, p.ImageUrl }) // Select Name and ImageUrl
+                            .Select(p => new { p.Name, p.ImageUrl })
                             .FirstOrDefault()
                     })
-                    .Where(item => item.Product != null) // Filter out null products if any
+                    .Where(item => item.Product != null)
                     .ToList()
             })
             .ToListAsync(ct);

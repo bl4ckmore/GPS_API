@@ -1,8 +1,11 @@
+﻿// ECommerceApp.Infrastructure/Email/MailKitEmailSender.cs
+
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MimeKit;
+using ECommerceApp.Core.Interfaces;
 
 namespace ECommerceApp.Infrastructure.Email;
 
@@ -32,18 +35,28 @@ public sealed class MailKitEmailSender : IEmailSender
             var sso = _opt.UseStartTls ? SecureSocketOptions.StartTls : SecureSocketOptions.Auto;
             await client.ConnectAsync(_opt.Host, _opt.Port, sso, ct);
 
+            // 🎯 FIX 1: Change _opt.Username to _opt.User to match EmailOptions.cs
             if (!string.IsNullOrWhiteSpace(_opt.User))
                 await client.AuthenticateAsync(_opt.User, _opt.Password, ct);
 
             await client.SendAsync(msg, ct);
-            await client.DisconnectAsync(true, ct);
 
-            _log.LogInformation("Email sent to {To}. Subject={Subject}", toEmail, subject);
+            _log.LogInformation("Email sent successfully to {To}. Subject={Subject}", toEmail, subject);
+        }
+        catch (MailKit.Security.AuthenticationException authEx)
+        {
+            _log.LogError(authEx, "Email send failed due to authentication error. Check App Password and Username for {Host}.", _opt.Host);
+            throw;
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "Email send failed to {To}. Subject={Subject}", toEmail, subject);
+            _log.LogError(ex, "Email send failed to {To} due to connection/server error.", toEmail);
             throw;
+        }
+        finally
+        {
+            if (client.IsConnected)
+                await client.DisconnectAsync(true, ct);
         }
     }
 }

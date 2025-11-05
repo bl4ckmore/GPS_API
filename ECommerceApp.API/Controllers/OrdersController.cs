@@ -7,6 +7,7 @@ using ECommerceApp.Infrastructure.Data;
 using ECommerceApp.Core.Entities;
 using ECommerceApp.Core.Interfaces;
 using ECommerceApp.Infrastructure.Email;
+using Microsoft.Extensions.Configuration; // <-- NEW: Required to read AppConfig
 
 namespace ECommerceApp.API.Controllers;
 
@@ -19,12 +20,18 @@ public sealed class OrdersController : ControllerBase
     private readonly ApplicationDbContext _db;
     private readonly IEmailSender _email;
     private readonly ILogger<OrdersController> _log;
+    private readonly IConfiguration _config; // <-- NEW FIELD
 
-    public OrdersController(ApplicationDbContext db, IEmailSender email, ILogger<OrdersController> log)
+    public OrdersController(
+        ApplicationDbContext db,
+        IEmailSender email,
+        ILogger<OrdersController> log,
+        IConfiguration config) // <-- ADD IConfiguration
     {
         _db = db;
         _email = email;
         _log = log;
+        _config = config; // <-- ASSIGN
     }
 
     // POST /api/orders/place
@@ -96,12 +103,11 @@ public sealed class OrdersController : ControllerBase
             var oi = new OrderItem
             {
                 id = Guid.NewGuid(),
-                // CRITICAL FIX: Rely on navigation property for FK assignment (resolves 23503 error)
                 ProductId = it.ProductId,
                 unitPrice = it.UnitPrice,
                 qty = it.Qty
             };
-            order.Items.Add(oi); // Use navigation property to link item to parent order
+            order.Items.Add(oi); // Use navigation property
         }
 
         // Clear cart
@@ -136,7 +142,8 @@ public sealed class OrdersController : ControllerBase
                <strong>Shipping:</strong> {shipping:C}<br/>
                <strong>Total:</strong> {total:C}</p>";
 
-        var adminEmail = Environment.GetEnvironmentVariable("ORDERS_ADMIN_EMAIL");
+        // 💥 FIX: Read Admin Email from AppConfig section
+        var adminEmail = _config["AppConfig:ORDERS_ADMIN_EMAIL"];
         var adminHtml = $"<p>New order placed! Ref: {orderNumber}<br/>User: {System.Net.WebUtility.HtmlEncode(userEmail)}<br/>Total: {total:C}<br/>Items: {items.Count}</p>";
 
         // Log *user* email intent

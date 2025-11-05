@@ -3,11 +3,12 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection; // <-- NEW: Required for IServiceProvider extension method
 using ECommerceApp.Infrastructure.Data;
 using ECommerceApp.Core.Entities;
 using ECommerceApp.Core.Interfaces;
 using ECommerceApp.Infrastructure.Email;
-using Microsoft.Extensions.Configuration; // <-- NEW: Required to read AppConfig
 
 namespace ECommerceApp.API.Controllers;
 
@@ -20,18 +21,21 @@ public sealed class OrdersController : ControllerBase
     private readonly ApplicationDbContext _db;
     private readonly IEmailSender _email;
     private readonly ILogger<OrdersController> _log;
-    private readonly IConfiguration _config; // <-- NEW FIELD
+    private readonly IConfiguration _config;
+    private readonly IServiceProvider _serviceProvider; // <-- CRITICAL FIX: To create background scope
 
     public OrdersController(
         ApplicationDbContext db,
         IEmailSender email,
         ILogger<OrdersController> log,
-        IConfiguration config) // <-- ADD IConfiguration
+        IConfiguration config,
+        IServiceProvider serviceProvider) // <-- INJECT IServiceProvider
     {
         _db = db;
         _email = email;
         _log = log;
-        _config = config; // <-- ASSIGN
+        _config = config;
+        _serviceProvider = serviceProvider; // <-- ASSIGN IServiceProvider
     }
 
     // POST /api/orders/place
@@ -41,11 +45,9 @@ public sealed class OrdersController : ControllerBase
         var userId = await ResolveUserIdAsync(ct);
         if (userId == Guid.Empty) return Unauthorized(new { error = "Cannot resolve user from JWT" });
 
-        // Cart (read-only)
         var cart = await _db.Carts.AsNoTracking().FirstOrDefaultAsync(c => c.UserId == userId, ct);
         if (cart is null) return BadRequest(new { error = "Cart is empty" });
 
-        // Items retrieval
         var items = await _db.CartItems
             .Where(ci => ci.CartId == cart.id)
             .Join(_db.Products, ci => ci.ProductId, p => p.id, (ci, p) => new
@@ -97,7 +99,7 @@ public sealed class OrdersController : ControllerBase
         };
         await _db.Orders.AddAsync(order, ct);
 
-        // Create OrderItems (Child Entities)
+        // Create OrderItems
         foreach (var it in items)
         {
             var oi = new OrderItem
@@ -107,7 +109,7 @@ public sealed class OrdersController : ControllerBase
                 unitPrice = it.UnitPrice,
                 qty = it.Qty
             };
-            order.Items.Add(oi); // Use navigation property
+            order.Items.Add(oi);
         }
 
         // Clear cart
@@ -115,12 +117,13 @@ public sealed class OrdersController : ControllerBase
         _db.CartItems.RemoveRange(cartItems);
 
         // ====================================================================
-        // Email Logging Logic - Part 1: Log Intent
+        // Email Logging Logic - Part 1: Log Intent (Synchronous)
         // ====================================================================
         var logs = new List<EmailLog>();
         var userEmail = GetUserEmailFromClaims();
+        var adminEmail = _config["AppConfig:ORDERS_ADMIN_EMAIL"];
 
-        // Email HTML content preparation
+        // --- Email HTML Content Preparation ---
         var lines = string.Join("", items.Select(i =>
             $"<tr><td style='padding:6px 8px'>{System.Net.WebUtility.HtmlEncode(i.Title)}</td><td style='padding:6px 8px'>{i.Qty}</td><td style='padding:6px 8px'>{i.UnitPrice:C}</td></tr>"));
 
@@ -142,9 +145,8 @@ public sealed class OrdersController : ControllerBase
                <strong>Shipping:</strong> {shipping:C}<br/>
                <strong>Total:</strong> {total:C}</p>";
 
-        // 💥 FIX: Read Admin Email from AppConfig section
-        var adminEmail = _config["AppConfig:ORDERS_ADMIN_EMAIL"];
         var adminHtml = $"<p>New order placed! Ref: {orderNumber}<br/>User: {System.Net.WebUtility.HtmlEncode(userEmail)}<br/>Total: {total:C}<br/>Items: {items.Count}</p>";
+        // ----------------------------------------
 
         // Log *user* email intent
         if (!string.IsNullOrWhiteSpace(userEmail))
@@ -174,38 +176,61 @@ public sealed class OrdersController : ControllerBase
             logs.Add(log);
         }
 
-        // Save Order (Parent), OrderItems (Children), Cart clearance, and EmailLog entries in ONE TRANSACTION
+        // Save Order, OrderItems, Cart clearance, and initial EmailLog entries
         await _db.SaveChangesAsync(ct);
 
 
         // ====================================================================
-        // Email Logging Logic - Part 2: Send and Update Status (WITH DEBUGGING)
+        // 💥 FIX: Decouple Email Sending using IServiceProvider to manage scope
         // ====================================================================
-        foreach (var log in logs)
+        Task.Run(async () =>
         {
-            var htmlContent = log.To == userEmail ? userHtml : adminHtml;
+            // 🎯 CRITICAL FIX: Create a new scope for the background task 
+            // to get a non-disposed ApplicationDbContext instance.
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
-            try
+            // Get the IEmailSender instance for this scope as well (optional but cleaner)
+            var emailSender = scope.ServiceProvider.GetRequiredService<IEmailSender>();
+
+
+            foreach (var log in logs)
             {
-                await _email.SendAsync(log.To, log.Subject, htmlContent, ct);
-                log.SentAt = DateTime.UtcNow;
-                log.Status = "Success";
+                var htmlContent = log.To == userEmail ? userHtml : adminHtml;
 
-                // 🎯 CONSOLE DEBUG LOGGING: Success message
-                _log.LogInformation("EMAIL DEBUG: Successfully completed send process for order {OrderNumber} to {To}.", orderNumber, log.To);
+                try
+                {
+                    // Use the scoped emailSender instance
+                    await emailSender.SendAsync(log.To, log.Subject, htmlContent, CancellationToken.None);
+
+                    log.SentAt = DateTime.UtcNow;
+                    log.Status = "Success";
+                    _log.LogInformation("EMAIL DEBUG (Background): Successfully sent email for order {OrderNumber} to {To}.", orderNumber, log.To);
+                }
+                catch (Exception ex)
+                {
+                    log.Status = "Failed";
+                    log.ErrorMessage = ex.Message;
+                    _log.LogError(ex, "EMAIL DEBUG (Background): FATAL FAILURE during send process for order {OrderNumber} to {To}.", orderNumber, log.To);
+                }
             }
-            catch (Exception ex)
+
+            // Save the final log status updates in the background using the new scope
+            if (logs.Any())
             {
-                log.Status = "Failed";
-                log.ErrorMessage = ex.Message;
-                // 🎯 CONSOLE DEBUG LOGGING: Explicit Failure Message
-                _log.LogError(ex, "EMAIL DEBUG: FATAL FAILURE during send process for order {OrderNumber} to {To}.", orderNumber, log.To);
+                try
+                {
+                    // Attach the logs (which are detached entities from the main scope) to the new context
+                    dbContext.EmailLogs.UpdateRange(logs);
+                    await dbContext.SaveChangesAsync(CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "EMAIL DEBUG (Background): Failed to save final log status to DB.");
+                }
             }
-        }
-
-        // Save the final log status updates
-        if (logs.Any())
-            await _db.SaveChangesAsync(ct);
+        });
+        // NOTE: We do NOT await Task.Run, ensuring response returns immediately.
 
         // ====================================================================
 
@@ -258,7 +283,7 @@ public sealed class OrdersController : ControllerBase
         return Ok(orders);
     }
 
-    // GET /api/orders/{orderId}/items (This endpoint still exists if full details are needed elsewhere)
+    // GET /api/orders/{orderId}/items
     [HttpGet("{orderId:guid}/items")]
     public async Task<IActionResult> GetItems(Guid orderId, CancellationToken ct)
     {

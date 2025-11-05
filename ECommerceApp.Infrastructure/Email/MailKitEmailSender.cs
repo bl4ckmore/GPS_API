@@ -22,8 +22,9 @@ public sealed class MailKitEmailSender : IEmailSender
 
     public async Task SendAsync(string toEmail, string subject, string htmlBody, CancellationToken ct = default)
     {
+        // 🎯 FIX: Apply Trim() to FromName and FromAddress when constructing the message
         var msg = new MimeMessage();
-        msg.From.Add(new MailboxAddress(_opt.FromName, _opt.FromAddress));
+        msg.From.Add(new MailboxAddress(_opt.FromName.Trim(), _opt.FromAddress.Trim()));
         msg.To.Add(MailboxAddress.Parse(toEmail));
         msg.Subject = subject;
         msg.Body = new BodyBuilder { HtmlBody = htmlBody }.ToMessageBody();
@@ -33,11 +34,16 @@ public sealed class MailKitEmailSender : IEmailSender
         try
         {
             var sso = _opt.UseStartTls ? SecureSocketOptions.StartTls : SecureSocketOptions.Auto;
-            await client.ConnectAsync(_opt.Host, _opt.Port, sso, ct);
 
-            // 🎯 FIX 1: Change _opt.Username to _opt.User to match EmailOptions.cs
-            if (!string.IsNullOrWhiteSpace(_opt.User))
-                await client.AuthenticateAsync(_opt.User, _opt.Password, ct);
+            // Trim Host, User, and Password values for safety (Already in place)
+            var host = _opt.Host.Trim();
+            var user = _opt.User.Trim();
+            var password = _opt.Password.Trim();
+
+            await client.ConnectAsync(host, _opt.Port, sso, ct);
+
+            if (!string.IsNullOrWhiteSpace(user))
+                await client.AuthenticateAsync(user, password, ct);
 
             await client.SendAsync(msg, ct);
 

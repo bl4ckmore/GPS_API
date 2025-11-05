@@ -1,3 +1,5 @@
+﻿// ECommerceApp.Core.Entities/Order.cs
+
 using ECommerceApp.Core.Entities;
 
 namespace ECommerceApp.Core.Entities;
@@ -8,7 +10,7 @@ public class Order : BaseEntity
 
     public Guid UserId { get; set; }
     public OrderStatus Status { get; set; }
-
+    public string? OrderNumber { get; set; }
     public decimal Subtotal { get; set; }
     public decimal Shipping { get; set; }
     public decimal Discount { get; set; }
@@ -23,4 +25,7 @@ public class Order : BaseEntity
     public string? City { get; set; }
     public string? Country { get; set; }
     public string? Notes { get; set; }
+
+    // 💥 FIX: Navigation property for OrderItems
+    public List<OrderItem> Items { get; set; } = new List<OrderItem>();
 }

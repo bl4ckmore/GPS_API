@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using ECommerceApp.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ECommerceApp.Infrastructure.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251105184150_AddEmailLogTable")]
+    partial class AddEmailLogTable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -237,9 +240,6 @@ namespace ECommerceApp.Infrastructure.Migrations
                     b.Property<string>("Notes")
                         .HasColumnType("text");
 
-                    b.Property<string>("OrderNumber")
-                        .HasColumnType("text");
-
                     b.Property<string>("Phone")
                         .HasColumnType("text");
 
@@ -287,12 +287,10 @@ namespace ECommerceApp.Infrastructure.Migrations
                         .HasColumnType("boolean");
 
                     b.Property<Guid>("OrderId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("OrderId");
+                        .HasColumnType("uuid");
 
                     b.Property<Guid>("ProductId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("ProductId");
+                        .HasColumnType("uuid");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -317,6 +315,10 @@ namespace ECommerceApp.Infrastructure.Migrations
                     b.HasKey("id");
 
                     b.HasIndex("OrderId");
+
+                    b.HasIndex("ProductId");
+
+                    b.HasIndex("OrderId", "ProductId");
 
                     b.ToTable("OrderItems");
                 });
@@ -435,15 +437,6 @@ namespace ECommerceApp.Infrastructure.Migrations
                     b.Navigation("Product");
                 });
 
-            modelBuilder.Entity("ECommerceApp.Core.Entities.OrderItem", b =>
-                {
-                    b.HasOne("ECommerceApp.Core.Entities.Order", null)
-                        .WithMany("Items")
-                        .HasForeignKey("OrderId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
             modelBuilder.Entity("ECommerceApp.Core.Entities.Product", b =>
                 {
                     b.HasOne("ECommerceApp.Core.Entities.Category", "Category")
@@ -457,11 +450,6 @@ namespace ECommerceApp.Infrastructure.Migrations
             modelBuilder.Entity("ECommerceApp.Core.Entities.Category", b =>
                 {
                     b.Navigation("Products");
-                });
-
-            modelBuilder.Entity("ECommerceApp.Core.Entities.Order", b =>
-                {
-                    b.Navigation("Items");
                 });
 #pragma warning restore 612, 618
         }

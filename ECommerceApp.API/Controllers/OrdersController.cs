@@ -8,7 +8,6 @@ using ECommerceApp.Core.Entities;
 using ECommerceApp.Core.Interfaces;
 using ECommerceApp.Infrastructure.Email;
 
-
 namespace ECommerceApp.API.Controllers;
 
 [ApiController]
@@ -30,23 +29,23 @@ public sealed class OrdersController : ControllerBase
 
     // POST /api/orders/place
     [HttpPost("place")]
-    public async Task<IActionResult> Place(CancellationToken ct)
+    public async Task<IActionResult> Place([FromBody] PlaceOrderRequest req, CancellationToken ct)
     {
         var userId = await ResolveUserIdAsync(ct);
         if (userId == Guid.Empty) return Unauthorized(new { error = "Cannot resolve user from JWT" });
 
-        // Cart
+        // Cart (read-only)
         var cart = await _db.Carts.AsNoTracking().FirstOrDefaultAsync(c => c.UserId == userId, ct);
         if (cart is null) return BadRequest(new { error = "Cart is empty" });
 
-        // Items (use your model fields: ci.qty, NOT Quantity)
+        // Items retrieval
         var items = await _db.CartItems
             .Where(ci => ci.CartId == cart.id)
             .Join(_db.Products, ci => ci.ProductId, p => p.id, (ci, p) => new
             {
                 ProductId = p.id,
                 Title = p.Name,
-                UnitPrice = p.Price,      // Price is non-nullable decimal in your model
+                UnitPrice = p.Price,
                 Qty = ci.qty,
                 ImageUrl = p.ImageUrl,
                 SKU = p.SKU
@@ -62,79 +61,146 @@ public sealed class OrdersController : ControllerBase
         var discount = 0m;
         var total = subtotal + tax + shipping - discount;
 
-        // Create Order (Status is enum)
+        // Generate a unique Order Number
+        var now = DateTime.UtcNow;
+        var orderNumber = $"EC-{now:yyyyMMdd}-{now.Ticks % 100000:D5}";
+
+        // Create Order (Parent Entity)
         var order = new Order
         {
             id = Guid.NewGuid(),
             UserId = userId,
-            Status = OrderStatus.Pending,  // <-- enum
+            Status = OrderStatus.Pending,
+            OrderNumber = orderNumber,
             Subtotal = subtotal,
             Tax = tax,
             Shipping = shipping,
             Discount = discount,
             Total = total,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = now,
+
+            // Map Contact/Shipping details from DTO
+            FullName = req.FullName,
+            Email = req.Email,
+            Phone = req.Phone,
+            AddressLine = req.AddressLine,
+            City = req.City,
+            Country = req.Country,
+            Notes = req.Notes
         };
         await _db.Orders.AddAsync(order, ct);
 
-        // Create OrderItems (your fields: unitPrice, qty)
+        // Create OrderItems (Child Entities)
         foreach (var it in items)
         {
             var oi = new OrderItem
             {
                 id = Guid.NewGuid(),
-                OrderId = order.id,
                 ProductId = it.ProductId,
                 unitPrice = it.UnitPrice,
                 qty = it.Qty
             };
-            await _db.OrderItems.AddAsync(oi, ct);
+            order.Items.Add(oi);
         }
 
         // Clear cart
         var cartItems = _db.CartItems.Where(ci => ci.CartId == cart.id);
         _db.CartItems.RemoveRange(cartItems);
 
-        await _db.SaveChangesAsync(ct);
-
-        // Email (take from JWT claims)
+        // ====================================================================
+        // Email Logging Logic - Part 1: Log Intent
+        // ====================================================================
+        var logs = new List<EmailLog>();
         var userEmail = GetUserEmailFromClaims();
-        if (!string.IsNullOrWhiteSpace(userEmail))
-        {
-            var lines = string.Join("", items.Select(i =>
-                $"<tr><td style='padding:6px 8px'>{System.Net.WebUtility.HtmlEncode(i.Title)}</td><td style='padding:6px 8px'>{i.Qty}</td><td style='padding:6px 8px'>{i.UnitPrice:C}</td></tr>"));
 
-            var html = $@"
-                <h2>Order confirmation</h2>
-                <p>Thank you for your order.</p>
-                <table style='border-collapse:collapse'>
-                    <thead>
-                        <tr>
-                          <th align='left' style='padding:6px 8px'>Product</th>
-                          <th style='padding:6px 8px'>Qty</th>
-                          <th style='padding:6px 8px'>Price</th>
-                        </tr>
-                    </thead>
-                    <tbody>{lines}</tbody>
-                </table>
-                <p><strong>Subtotal:</strong> {subtotal:C}<br/>
-                   <strong>Tax:</strong> {tax:C}<br/>
-                   <strong>Shipping:</strong> {shipping:C}<br/>
-                   <strong>Total:</strong> {total:C}</p>";
+        // Email HTML content preparation
+        var lines = string.Join("", items.Select(i =>
+            $"<tr><td style='padding:6px 8px'>{System.Net.WebUtility.HtmlEncode(i.Title)}</td><td style='padding:6px 8px'>{i.Qty}</td><td style='padding:6px 8px'>{i.UnitPrice:C}</td></tr>"));
 
-            await _email.SendAsync(userEmail, "Your order confirmation", html, ct);
-        }
+        var userHtml = $@"
+            <h2>Order confirmation ({orderNumber})</h2>
+            <p>Thank you for your order.</p>
+            <table style='border-collapse:collapse'>
+                <thead>
+                    <tr>
+                      <th align='left' style='padding:6px 8px'>Product</th>
+                      <th style='padding:6px 8px'>Qty</th>
+                      <th style='padding:6px 8px'>Price</th>
+                    </tr>
+                </thead>
+                <tbody>{lines}</tbody>
+            </table>
+            <p><strong>Subtotal:</strong> {subtotal:C}<br/>
+               <strong>Tax:</strong> {tax:C}<br/>
+               <strong>Shipping:</strong> {shipping:C}<br/>
+               <strong>Total:</strong> {total:C}</p>";
 
         var adminEmail = Environment.GetEnvironmentVariable("ORDERS_ADMIN_EMAIL");
+        var adminHtml = $"<p>New order placed! Ref: {orderNumber}<br/>User: {System.Net.WebUtility.HtmlEncode(userEmail)}<br/>Total: {total:C}<br/>Items: {items.Count}</p>";
+
+        // Log *user* email intent
+        if (!string.IsNullOrWhiteSpace(userEmail))
+        {
+            var log = new EmailLog
+            {
+                OrderId = order.id,
+                To = userEmail,
+                Subject = $"Your order confirmation ({orderNumber})",
+                BodyContent = userHtml.Substring(0, Math.Min(userHtml.Length, 4000)),
+            };
+            await _db.EmailLogs.AddAsync(log, ct);
+            logs.Add(log);
+        }
+
+        // Log *admin* email intent
         if (!string.IsNullOrWhiteSpace(adminEmail))
         {
-            await _email.SendAsync(adminEmail, "New order placed",
-                $"<p>User: {System.Net.WebUtility.HtmlEncode(userEmail)}<br/>Total: {total:C}<br/>Items: {items.Count}</p>", ct);
+            var log = new EmailLog
+            {
+                OrderId = order.id,
+                To = adminEmail,
+                Subject = $"New order placed: {orderNumber}",
+                BodyContent = adminHtml.Substring(0, Math.Min(adminHtml.Length, 4000)),
+            };
+            await _db.EmailLogs.AddAsync(log, ct);
+            logs.Add(log);
         }
+
+        // Save Order (Parent), OrderItems (Children), Cart clearance, and EmailLog entries in ONE TRANSACTION
+        await _db.SaveChangesAsync(ct);
+
+
+        // ====================================================================
+        // Email Logging Logic - Part 2: Send and Update Status
+        // ====================================================================
+        foreach (var log in logs)
+        {
+            var htmlContent = log.To == userEmail ? userHtml : adminHtml;
+
+            try
+            {
+                await _email.SendAsync(log.To, log.Subject, htmlContent, ct);
+                log.SentAt = DateTime.UtcNow;
+                log.Status = "Success";
+            }
+            catch (Exception ex)
+            {
+                log.Status = "Failed";
+                log.ErrorMessage = ex.Message;
+                _log.LogError(ex, "Failed to send email to {To} for order {OrderId}", log.To, log.OrderId);
+            }
+        }
+
+        // Save the final log status updates
+        if (logs.Any())
+            await _db.SaveChangesAsync(ct);
+
+        // ====================================================================
 
         return Ok(new
         {
             orderId = order.id,
+            orderNumber = orderNumber,
             total,
             items = items.Select(i => new { i.ProductId, i.Title, i.Qty, i.UnitPrice })
         });
@@ -153,20 +219,34 @@ public sealed class OrdersController : ControllerBase
             .Select(o => new
             {
                 o.id,
-                o.Status,
+                o.OrderNumber,
+                Status = o.Status.ToString(),
                 o.Total,
                 o.Subtotal,
                 o.Tax,
                 o.Shipping,
                 o.Discount,
-                o.CreatedAt
+                o.CreatedAt,
+                // 💥 NEW: Select a few items with product images for display in history
+                OrderItems = o.Items
+                    .Take(3) // Take up to 3 items
+                    .Select(oi => new
+                    {
+                        oi.qty,
+                        Product = _db.Products
+                            .Where(p => p.id == oi.ProductId)
+                            .Select(p => new { p.Name, p.ImageUrl }) // Select Name and ImageUrl
+                            .FirstOrDefault()
+                    })
+                    .Where(item => item.Product != null) // Filter out null products if any
+                    .ToList()
             })
             .ToListAsync(ct);
 
         return Ok(orders);
     }
 
-    // GET /api/orders/{orderId}/items
+    // GET /api/orders/{orderId}/items (This endpoint still exists if full details are needed elsewhere)
     [HttpGet("{orderId:guid}/items")]
     public async Task<IActionResult> GetItems(Guid orderId, CancellationToken ct)
     {
@@ -176,16 +256,17 @@ public sealed class OrdersController : ControllerBase
         var ok = await _db.Orders.AnyAsync(o => o.id == orderId && o.UserId == userId, ct);
         if (!ok) return NotFound();
 
-        var items = await _db.OrderItems
-            .Where(oi => oi.OrderId == orderId)
+        var items = await _db.Orders
+            .Where(o => o.id == orderId)
+            .SelectMany(o => o.Items)
             .Join(_db.Products, oi => oi.ProductId, p => p.id, (oi, p) => new
             {
                 oi.id,
                 p.Name,
                 p.SKU,
                 p.ImageUrl,
-                Qty = oi.qty,                  // <-- your field
-                UnitPrice = oi.unitPrice       // <-- your field
+                Qty = oi.qty,
+                UnitPrice = oi.unitPrice
             })
             .ToListAsync(ct);
 
@@ -212,9 +293,19 @@ public sealed class OrdersController : ControllerBase
 
     private string? GetUserEmailFromClaims()
     {
-        // Try standard email claims
         return User.FindFirstValue(ClaimTypes.Email)
             ?? User.FindFirst("email")?.Value
-            ?? User.FindFirst("preferred_username")?.Value; // fallback if you stuff email there
+            ?? User.FindFirst("preferred_username")?.Value;
+    }
+
+    public sealed class PlaceOrderRequest
+    {
+        public string? FullName { get; set; }
+        public string? Email { get; set; }
+        public string? Phone { get; set; }
+        public string? AddressLine { get; set; }
+        public string? City { get; set; }
+        public string? Country { get; set; }
+        public string? Notes { get; set; }
     }
 }

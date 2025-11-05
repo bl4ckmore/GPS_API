@@ -14,6 +14,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
     public DbSet<Category> Categories => Set<Category>();
+    public DbSet<EmailLog> EmailLogs => Set<EmailLog>(); // <-- ADD THIS LINE
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -87,12 +88,15 @@ public class ApplicationDbContext : DbContext
         modelBuilder.Entity<OrderItem>(e =>
         {
             e.HasKey(x => x.id);
+
+            e.Property(x => x.OrderId).HasColumnName("OrderId"); 
+
+            e.Property(x => x.ProductId).HasColumnName("ProductId"); 
+
             e.Property(x => x.unitPrice).HasColumnType("numeric(18,2)");
             e.Property(x => x.qty).HasDefaultValue(1);
 
             e.HasIndex(x => x.OrderId);
-            e.HasIndex(x => x.ProductId);
-            e.HasIndex(x => new { x.OrderId, x.ProductId });
         });
     }
 }

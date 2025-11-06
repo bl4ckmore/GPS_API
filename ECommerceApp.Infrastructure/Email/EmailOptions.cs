@@ -9,4 +9,5 @@ public sealed class EmailOptions
     public string User { get; set; } = "";
     public string Password { get; set; } = "";
     public bool EnableLogging { get; set; } = true;
+    //public string msg { get; set } = string.Empty; 
 }

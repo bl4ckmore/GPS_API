@@ -12,6 +12,12 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Npgsql;
+using ECommerceApp.Core.Entities;
+using Microsoft.AspNetCore.Identity;
+using ECommerceApp.API.Controllers;
+using ECommerceApp.Core.Entities;
+using Microsoft.AspNetCore.Identity;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,6 +32,10 @@ builder.Services.AddDbContext<ApplicationDbContext>(opt => opt.UseNpgsql(dataSou
 
 // ---------- Controllers ----------
 builder.Services.AddControllers();
+
+builder.Services.AddScoped<IPasswordHasher<AppUser>, PasswordHasher<AppUser>>();
+builder.Services.AddScoped<WhatsGpsAuthController>();
+
 
 // ---------- CORS (single place) ----------
 const string CorsPolicy = "ng";
@@ -56,6 +66,11 @@ builder.Services.AddHttpClient("whats", c =>
     AllowAutoRedirect = false,
     AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
 });
+
+// Register Users
+
+builder.Services.AddScoped<IPasswordHasher<AppUser>, PasswordHasher<AppUser>>();
+
 
 // ---------- Whats session store (in-memory) ----------
 builder.Services.AddSingleton<IWhatsSessionStore, InMemoryWhatsSessionStore>();

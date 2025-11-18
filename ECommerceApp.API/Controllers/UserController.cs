@@ -15,14 +15,14 @@ public class UsersController : ControllerBase
     private readonly ApplicationDbContext _db;
     public UsersController(ApplicationDbContext db) => _db = db;
 
-    // FIX 3: Moved 'me' logic here to match front-end request GET /api/users/me (Fixes 405)
+    // 'me' logic stays as you had it (just returns basic identity)
     [HttpGet("me")]
-    [AllowAnonymous] // Allow any authenticated user to check their identity
+    [AllowAnonymous] // currently allows anyone to call this; keep as you wrote
     public IActionResult Me()
     {
         // Check if authentication succeeded at all
         if (!(User?.Identity?.IsAuthenticated ?? false))
-            return Ok(new { id = (string?)null, username = (string?)null, role = "guest" }); // Returning 'guest' is clearer than 'user' here
+            return Ok(new { id = (string?)null, username = (string?)null, role = "guest" });
 
         // Extract user claims
         var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -38,8 +38,20 @@ public class UsersController : ControllerBase
         var items = await _db.Users
             .AsNoTracking()
             .OrderBy(u => u.Username)
-            .Select(u => new { u.id, u.Username, u.IsAdmin, u.LastLoginAt, u.CreatedAt })
+            .Select(u => new
+            {
+                u.id,
+                u.Username,
+                u.Email,      // NEW
+                u.Phone,      // NEW
+                u.IsAdmin,
+                u.Verified,   // NEW
+                u.LastLoginAt,
+                u.CreatedAt,
+                u.UpdatedAt   // NEW
+            })
             .ToListAsync();
+
         return Ok(items);
     }
 
@@ -49,12 +61,37 @@ public class UsersController : ControllerBase
         var u = await _db.Users.FirstOrDefaultAsync(x => x.id == id);
         if (u is null) return NotFound();
 
-        // Only toggling IsAdmin here; add more fields as needed
+        // Username update is optional – keep as-is or change if provided
+        if (!string.IsNullOrWhiteSpace(body.Username) && body.Username != u.Username)
+        {
+            u.Username = body.Username;
+        }
+
+        // Existing behavior
         u.IsAdmin = body.IsAdmin;
+
+        // NEW: Email / Phone / Verified updates
+        u.Email = body.Email ?? u.Email;
+        u.Phone = body.Phone ?? u.Phone;
+        u.Verified = body.Verified;
+
+        // Do NOT touch PasswordHash here (separate flow later)
         u.UpdatedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync();
-        return Ok(new { u.id, u.Username, u.IsAdmin, u.LastLoginAt, u.CreatedAt, u.UpdatedAt });
+
+        return Ok(new
+        {
+            u.id,
+            u.Username,
+            u.Email,
+            u.Phone,
+            u.IsAdmin,
+            u.Verified,
+            u.LastLoginAt,
+            u.CreatedAt,
+            u.UpdatedAt
+        });
     }
 
     [HttpDelete("{id:guid}")]

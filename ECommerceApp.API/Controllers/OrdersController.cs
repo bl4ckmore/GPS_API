@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection; // <-- NEW: Required for IServiceProvider extension method
+using Microsoft.Extensions.DependencyInjection;
 using ECommerceApp.Infrastructure.Data;
 using ECommerceApp.Core.Entities;
 using ECommerceApp.Core.Interfaces;
@@ -14,6 +14,7 @@ namespace ECommerceApp.API.Controllers;
 
 [ApiController]
 [Route("api/orders")]
+// Be explicit: use the JWT bearer scheme, same as in Program.cs
 [Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
 [Produces("application/json")]
 public sealed class OrdersController : ControllerBase
@@ -22,59 +23,96 @@ public sealed class OrdersController : ControllerBase
     private readonly IEmailSender _email;
     private readonly ILogger<OrdersController> _log;
     private readonly IConfiguration _config;
-    private readonly IServiceProvider _serviceProvider; // <-- CRITICAL FIX: To create background scope
+    private readonly IServiceProvider _serviceProvider;
 
     public OrdersController(
         ApplicationDbContext db,
         IEmailSender email,
         ILogger<OrdersController> log,
         IConfiguration config,
-        IServiceProvider serviceProvider) // <-- INJECT IServiceProvider
+        IServiceProvider serviceProvider)
     {
         _db = db;
         _email = email;
         _log = log;
         _config = config;
-        _serviceProvider = serviceProvider; // <-- ASSIGN IServiceProvider
+        _serviceProvider = serviceProvider;
     }
 
+    // ================== ADMIN: LIST ALL ORDERS ==================
+    // Only admin can see all orders
+    [HttpGet]
+    [Authorize(
+        AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme,
+        Roles = "Admin")]
+    public async Task<IActionResult> GetAllOrders(CancellationToken ct)
+    {
+        var query =
+            from o in _db.Orders.AsNoTracking()
+            join u in _db.Users.AsNoTracking() on o.UserId equals u.id into users
+            from u in users.DefaultIfEmpty()
+            orderby o.CreatedAt descending
+            select new
+            {
+                o.id,
+                o.OrderNumber,
+                Status = o.Status.ToString(),
+                o.Total,
+                o.CreatedAt,
+                CustomerName = u != null ? u.Username : (o.FullName ?? "Guest"),
+                o.Email,
+                ItemCount = o.Items.Count
+            };
+
+        var list = await query.ToListAsync(ct);
+        return Ok(list);
+    }
+
+    // ================== CLIENT: PLACE ORDER ==================
     // POST /api/orders/place
     [HttpPost("place")]
     public async Task<IActionResult> Place([FromBody] PlaceOrderRequest req, CancellationToken ct)
     {
         var userId = await ResolveUserIdAsync(ct);
-        if (userId == Guid.Empty) return Unauthorized(new { error = "Cannot resolve user from JWT" });
+        if (userId == Guid.Empty)
+            return Unauthorized(new { error = "Cannot resolve user from JWT" });
 
-        var cart = await _db.Carts.AsNoTracking().FirstOrDefaultAsync(c => c.UserId == userId, ct);
-        if (cart is null) return BadRequest(new { error = "Cart is empty" });
+        var cart = await _db.Carts
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.UserId == userId, ct);
+
+        if (cart is null)
+            return BadRequest(new { error = "Cart is empty" });
 
         var items = await _db.CartItems
             .Where(ci => ci.CartId == cart.id)
-            .Join(_db.Products, ci => ci.ProductId, p => p.id, (ci, p) => new
-            {
-                ProductId = p.id,
-                Title = p.Name,
-                UnitPrice = p.Price,
-                Qty = ci.qty,
-                ImageUrl = p.ImageUrl,
-                SKU = p.SKU
-            })
+            .Join(
+                _db.Products,
+                ci => ci.ProductId,
+                p => p.id,
+                (ci, p) => new
+                {
+                    ProductId = p.id,
+                    Title = p.Name,
+                    UnitPrice = p.Price,
+                    Qty = ci.qty,
+                    ImageUrl = p.ImageUrl,
+                    SKU = p.SKU
+                })
             .ToListAsync(ct);
 
-        if (items.Count == 0) return BadRequest(new { error = "Cart has no items" });
+        if (items.Count == 0)
+            return BadRequest(new { error = "Cart has no items" });
 
-        // Totals
         var subtotal = items.Sum(i => i.UnitPrice * i.Qty);
         var tax = 0m;
         var shipping = 0m;
         var discount = 0m;
         var total = subtotal + tax + shipping - discount;
 
-        // Generate a unique Order Number
         var now = DateTime.UtcNow;
         var orderNumber = $"EC-{now:yyyyMMdd}-{now.Ticks % 100000:D5}";
 
-        // Create Order (Parent Entity)
         var order = new Order
         {
             id = Guid.NewGuid(),
@@ -88,7 +126,6 @@ public sealed class OrdersController : ControllerBase
             Total = total,
             CreatedAt = now,
 
-            // Map Contact/Shipping details from DTO
             FullName = req.FullName,
             Email = req.Email,
             Phone = req.Phone,
@@ -97,152 +134,42 @@ public sealed class OrdersController : ControllerBase
             Country = req.Country,
             Notes = req.Notes
         };
+
         await _db.Orders.AddAsync(order, ct);
 
-        // Create OrderItems
         foreach (var it in items)
         {
-            var oi = new OrderItem
+            order.Items.Add(new OrderItem
             {
                 id = Guid.NewGuid(),
                 ProductId = it.ProductId,
                 unitPrice = it.UnitPrice,
                 qty = it.Qty
-            };
-            order.Items.Add(oi);
+            });
         }
 
         // Clear cart
         var cartItems = _db.CartItems.Where(ci => ci.CartId == cart.id);
         _db.CartItems.RemoveRange(cartItems);
 
-        // ====================================================================
-        // Email Logging Logic - Part 1: Log Intent (Synchronous)
-        // ====================================================================
-        var logs = new List<EmailLog>();
-        var userEmail = GetUserEmailFromClaims();
-        var adminEmail = _config["AppConfig:ORDERS_ADMIN_EMAIL"];
-
-        // --- Email HTML Content Preparation ---
-        var lines = string.Join("", items.Select(i =>
-            $"<tr><td style='padding:6px 8px'>{System.Net.WebUtility.HtmlEncode(i.Title)}</td><td style='padding:6px 8px'>{i.Qty}</td><td style='padding:6px 8px'>{i.UnitPrice:C}</td></tr>"));
-
-        var userHtml = $@"
-            <h2>Order confirmation ({orderNumber})</h2>
-            <p>Thank you for your order.</p>
-            <table style='border-collapse:collapse'>
-                <thead>
-                    <tr>
-                      <th align='left' style='padding:6px 8px'>Product</th>
-                      <th style='padding:6px 8px'>Qty</th>
-                      <th style='padding:6px 8px'>Price</th>
-                    </tr>
-                </thead>
-                <tbody>{lines}</tbody>
-            </table>
-            <p><strong>Subtotal:</strong> {subtotal:C}<br/>
-               <strong>Tax:</strong> {tax:C}<br/>
-               <strong>Shipping:</strong> {shipping:C}<br/>
-               <strong>Total:</strong> {total:C}</p>";
-
-        var adminHtml = $"<p>New order placed! Ref: {orderNumber}<br/>User: {System.Net.WebUtility.HtmlEncode(userEmail)}<br/>Total: {total:C}<br/>Items: {items.Count}</p>";
-        // ----------------------------------------
-
-        // Log *user* email intent
-        if (!string.IsNullOrWhiteSpace(userEmail))
-        {
-            var log = new EmailLog
-            {
-                OrderId = order.id,
-                To = userEmail,
-                Subject = $"Your order confirmation ({orderNumber})",
-                BodyContent = userHtml.Substring(0, Math.Min(userHtml.Length, 4000)),
-            };
-            await _db.EmailLogs.AddAsync(log, ct);
-            logs.Add(log);
-        }
-
-        // Log *admin* email intent
-        if (!string.IsNullOrWhiteSpace(adminEmail))
-        {
-            var log = new EmailLog
-            {
-                OrderId = order.id,
-                To = adminEmail,
-                Subject = $"New order placed: {orderNumber}",
-                BodyContent = adminHtml.Substring(0, Math.Min(adminHtml.Length, 4000)),
-            };
-            await _db.EmailLogs.AddAsync(log, ct);
-            logs.Add(log);
-        }
-
-        // Save Order, OrderItems, Cart clearance, and initial EmailLog entries
         await _db.SaveChangesAsync(ct);
 
-
-        // ====================================================================
-        // 💥 FIX: Decouple Email Sending using IServiceProvider to manage scope
-        // ====================================================================
-        Task.Run(async () =>
+        // Fire & forget emails in background
+        _ = Task.Run(async () =>
         {
-            // 🎯 CRITICAL FIX: Create a new scope for the background task 
-            // to get a non-disposed ApplicationDbContext instance.
-            using var scope = _serviceProvider.CreateScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-
-            // Get the IEmailSender instance for this scope as well (optional but cleaner)
-            var emailSender = scope.ServiceProvider.GetRequiredService<IEmailSender>();
-
-
-            foreach (var log in logs)
-            {
-                var htmlContent = log.To == userEmail ? userHtml : adminHtml;
-
-                try
-                {
-                    // Use the scoped emailSender instance
-                    await emailSender.SendAsync(log.To, log.Subject, htmlContent, CancellationToken.None);
-
-                    log.SentAt = DateTime.UtcNow;
-                    log.Status = "Success";
-                    _log.LogInformation("EMAIL DEBUG (Background): Successfully sent email for order {OrderNumber} to {To}.", orderNumber, log.To);
-                }
-                catch (Exception ex)
-                {
-                    log.Status = "Failed";
-                    log.ErrorMessage = ex.Message;
-                    _log.LogError(ex, "EMAIL DEBUG (Background): FATAL FAILURE during send process for order {OrderNumber} to {To}.", orderNumber, log.To);
-                }
-            }
-
-            // Save the final log status updates in the background using the new scope
-            if (logs.Any())
-            {
-                try
-                {
-                    // Attach the logs (which are detached entities from the main scope) to the new context
-                    dbContext.EmailLogs.UpdateRange(logs);
-                    await dbContext.SaveChangesAsync(CancellationToken.None);
-                }
-                catch (Exception ex)
-                {
-                    _log.LogError(ex, "EMAIL DEBUG (Background): Failed to save final log status to DB.");
-                }
-            }
+            await SendOrderEmails(order.id, order.Email, orderNumber, total, items);
         });
-        // NOTE: We do NOT await Task.Run, ensuring response returns immediately.
-
-        // ====================================================================
 
         return Ok(new
         {
             orderId = order.id,
-            orderNumber = orderNumber,
+            orderNumber,
             total,
             items = items.Select(i => new { i.ProductId, i.Title, i.Qty, i.UnitPrice })
         });
     }
 
+    // ================== CLIENT: MY ORDERS ==================
     // GET /api/orders/my
     [HttpGet("my")]
     public async Task<IActionResult> MyOrders(CancellationToken ct)
@@ -263,78 +190,131 @@ public sealed class OrdersController : ControllerBase
                 o.Tax,
                 o.Shipping,
                 o.Discount,
-                o.CreatedAt,
-                // Select first few items for display
-                OrderItems = o.Items
-                    .Take(3)
-                    .Select(oi => new
-                    {
-                        oi.qty,
-                        Product = _db.Products
-                            .Where(p => p.id == oi.ProductId)
-                            .Select(p => new { p.Name, p.ImageUrl })
-                            .FirstOrDefault()
-                    })
-                    .Where(item => item.Product != null)
-                    .ToList()
+                o.CreatedAt
             })
             .ToListAsync(ct);
 
         return Ok(orders);
     }
 
+    // ================== ITEMS FOR AN ORDER ==================
     // GET /api/orders/{orderId}/items
     [HttpGet("{orderId:guid}/items")]
     public async Task<IActionResult> GetItems(Guid orderId, CancellationToken ct)
     {
         var userId = await ResolveUserIdAsync(ct);
-        if (userId == Guid.Empty) return Unauthorized();
+        var isAdmin = User.IsInRole("Admin");
 
-        var ok = await _db.Orders.AnyAsync(o => o.id == orderId && o.UserId == userId, ct);
-        if (!ok) return NotFound();
+        // Either it's this user's order OR user is admin
+        var isUserOrder = await _db.Orders
+            .AnyAsync(o => o.id == orderId && o.UserId == userId, ct);
 
-        var items = await _db.Orders
-            .Where(o => o.id == orderId)
-            .SelectMany(o => o.Items)
-            .Join(_db.Products, oi => oi.ProductId, p => p.id, (oi, p) => new
-            {
-                oi.id,
-                p.Name,
-                p.SKU,
-                p.ImageUrl,
-                Qty = oi.qty,
-                UnitPrice = oi.unitPrice
-            })
+        if (!isUserOrder && !isAdmin)
+            return NotFound();
+
+        var items = await _db.OrderItems
+            .Where(oi => oi.OrderId == orderId)
+            .Join(
+                _db.Products,
+                oi => oi.ProductId,
+                p => p.id,
+                (oi, p) => new
+                {
+                    oi.id,
+                    p.Name,
+                    p.SKU,
+                    p.ImageUrl,
+                    Qty = oi.qty,
+                    UnitPrice = oi.unitPrice
+                })
             .ToListAsync(ct);
 
         return Ok(items);
     }
 
-    // ===== Helpers =====
+    // ================== EMAIL SENDER (BACKGROUND) ==================
+    private async Task SendOrderEmails(
+        Guid orderId,
+        string? userEmail,
+        string orderNum,
+        decimal total,
+        IEnumerable<dynamic> items)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var emailSender = scope.ServiceProvider.GetRequiredService<IEmailSender>();
+            var config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+
+            var adminEmail = config["AppConfig:ORDERS_ADMIN_EMAIL"];
+            var body = $"<h3>Order {orderNum}</h3><p>Total: {total:C}</p>";
+
+            if (!string.IsNullOrWhiteSpace(userEmail))
+            {
+                await emailSender.SendAsync(
+                    userEmail,
+                    $"Order Confirmation {orderNum}",
+                    body,
+                    CancellationToken.None);
+            }
+
+            if (!string.IsNullOrWhiteSpace(adminEmail))
+            {
+                await emailSender.SendAsync(
+                    adminEmail,
+                    $"New Order: {orderNum}",
+                    body,
+                    CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Failed to send order emails");
+        }
+    }
+
+    // ================== USER RESOLUTION FROM JWT ==================
     private async Task<Guid> ResolveUserIdAsync(CancellationToken ct)
     {
-        var sub = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (Guid.TryParse(sub, out var guid)) return guid;
+        // 1) Try standard NameIdentifier / "sub" as GUID
+        var sub =
+            User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+            User.FindFirst("sub")?.Value;
 
-        var name = User.Identity?.Name ?? User.FindFirstValue(ClaimTypes.Name);
-        if (!string.IsNullOrWhiteSpace(name))
+        if (!string.IsNullOrEmpty(sub) && Guid.TryParse(sub, out var guidFromSub))
+            return guidFromSub;
+
+        // 2) Try custom "userId" / "uid" claims as GUID
+        var uid =
+            User.FindFirst("userId")?.Value ??
+            User.FindFirst("uid")?.Value ??
+            User.FindFirst("UserId")?.Value;
+
+        if (!string.IsNullOrEmpty(uid) && Guid.TryParse(uid, out var guidFromUid))
+            return guidFromUid;
+
+        // 3) Fallback: resolve by username or email
+        var username =
+            User.Identity?.Name ??
+            User.FindFirstValue(ClaimTypes.Name) ??
+            User.FindFirst("unique_name")?.Value ??
+            User.FindFirst("preferred_username")?.Value ??
+            User.FindFirst(ClaimTypes.Email)?.Value;
+
+        if (!string.IsNullOrWhiteSpace(username))
         {
-            var user = await _db.Users
-                .Where(u => u.Username == name)
+            var userId = await _db.Users
+                .Where(u => u.Username == username || u.Email == username)
                 .Select(u => u.id)
                 .FirstOrDefaultAsync(ct);
-            if (user != Guid.Empty) return user;
+
+            if (userId != Guid.Empty) return userId;
         }
+
         return Guid.Empty;
     }
 
-    private string? GetUserEmailFromClaims()
-    {
-        return User.FindFirstValue(ClaimTypes.Email)
-            ?? User.FindFirst("email")?.Value
-            ?? User.FindFirst("preferred_username")?.Value;
-    }
-
+    // ================== DTO ==================
     public sealed class PlaceOrderRequest
     {
         public string? FullName { get; set; }

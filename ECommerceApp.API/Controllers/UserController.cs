@@ -3,105 +3,119 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ECommerceApp.Infrastructure.Data;
 using ECommerceApp.Core.Entities;
-using System.Security.Claims; // Needed for FindFirstValue
+using System.Security.Claims;
 
 namespace ECommerceApp.API.Controllers;
 
 [ApiController]
-[Route("api/[controller]")] // Resolves to: /api/users
-[Authorize(Roles = "Admin")] // This restriction applies to all actions *except* those marked [AllowAnonymous]
+[Route("api/[controller]")] // api/users
+[Authorize]
 public class UsersController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
-    public UsersController(ApplicationDbContext db) => _db = db;
 
-    // 'me' logic stays as you had it (just returns basic identity)
-    [HttpGet("me")]
-    [AllowAnonymous] // currently allows anyone to call this; keep as you wrote
-    public IActionResult Me()
+    public UsersController(ApplicationDbContext db)
     {
-        // Check if authentication succeeded at all
-        if (!(User?.Identity?.IsAuthenticated ?? false))
-            return Ok(new { id = (string?)null, username = (string?)null, role = "guest" });
-
-        // Extract user claims
-        var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        var name = User.FindFirstValue(ClaimTypes.Name) ?? "user";
-        var role = User.FindFirstValue(ClaimTypes.Role) ?? "user";
-
-        return Ok(new { id, username = name, role });
+        _db = db;
     }
 
-    [HttpGet] // Maps to: GET /api/users (Requires Admin role)
+    // ===== 1. GET CURRENT PROFILE (Fixes 405 Error) =====
+    [HttpGet("profile")]
+    public async Task<IActionResult> GetProfile()
+    {
+        var idClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(idClaim, out var userId)) return Unauthorized();
+
+        var user = await _db.Users.AsNoTracking()
+            .FirstOrDefaultAsync(u => u.id == userId);
+
+        if (user == null) return NotFound();
+
+        // Return safe DTO
+        return Ok(new
+        {
+            user.id,
+            user.Username,
+            user.Email,
+            user.Phone,
+            user.IsAdmin,
+            user.Verified,
+            user.CreatedAt
+        });
+    }
+
+    // ===== 2. LIST ALL USERS (Admin Only) =====
+    [HttpGet]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> List()
     {
-        var items = await _db.Users
+        var users = await _db.Users
             .AsNoTracking()
-            .OrderBy(u => u.Username)
             .Select(u => new
             {
                 u.id,
                 u.Username,
-                u.Email,      // NEW
-                u.Phone,      // NEW
+                u.Email,
                 u.IsAdmin,
-                u.Verified,   // NEW
                 u.LastLoginAt,
-                u.CreatedAt,
-                u.UpdatedAt   // NEW
+                u.CreatedAt
             })
             .ToListAsync();
 
-        return Ok(items);
+        return Ok(users);
     }
 
+    // ===== 3. UPDATE USER (Fixes 400 Error) =====
     [HttpPut("{id:guid}")]
-    public async Task<IActionResult> Update(Guid id, [FromBody] AppUser body)
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> Update(Guid id, [FromBody] UpdateUserDto dto)
     {
-        var u = await _db.Users.FirstOrDefaultAsync(x => x.id == id);
-        if (u is null) return NotFound();
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.id == id);
+        if (user is null) return NotFound();
 
-        // Username update is optional – keep as-is or change if provided
-        if (!string.IsNullOrWhiteSpace(body.Username) && body.Username != u.Username)
-        {
-            u.Username = body.Username;
-        }
+        // Partial Updates - only update what is sent
+        if (dto.IsAdmin.HasValue) user.IsAdmin = dto.IsAdmin.Value;
+        if (dto.Verified.HasValue) user.Verified = dto.Verified.Value;
+        if (!string.IsNullOrWhiteSpace(dto.Email)) user.Email = dto.Email;
+        if (!string.IsNullOrWhiteSpace(dto.Phone)) user.Phone = dto.Phone;
+        if (!string.IsNullOrWhiteSpace(dto.Username)) user.Username = dto.Username;
 
-        // Existing behavior
-        u.IsAdmin = body.IsAdmin;
-
-        // NEW: Email / Phone / Verified updates
-        u.Email = body.Email ?? u.Email;
-        u.Phone = body.Phone ?? u.Phone;
-        u.Verified = body.Verified;
-
-        // Do NOT touch PasswordHash here (separate flow later)
-        u.UpdatedAt = DateTime.UtcNow;
+        user.UpdatedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync();
-
-        return Ok(new
-        {
-            u.id,
-            u.Username,
-            u.Email,
-            u.Phone,
-            u.IsAdmin,
-            u.Verified,
-            u.LastLoginAt,
-            u.CreatedAt,
-            u.UpdatedAt
-        });
+        return Ok(user);
     }
 
+    // ===== 4. DELETE USER =====
     [HttpDelete("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id)
     {
-        var u = await _db.Users.FirstOrDefaultAsync(x => x.id == id);
-        if (u is null) return NotFound();
+        var user = await _db.Users.FindAsync(id);
+        if (user is null) return NotFound();
 
-        _db.Users.Remove(u);
+        _db.Users.Remove(user);
         await _db.SaveChangesAsync();
         return NoContent();
     }
+
+    // ===== HELPER: SIMPLE ME (Header info) =====
+    [HttpGet("../auth/me")] // Fallback if AuthController doesn't handle it, usually AuthController handles this.
+    public IActionResult MeFallback()
+    {
+        var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var name = User.Identity?.Name;
+        var role = User.FindFirstValue(ClaimTypes.Role) ?? "User";
+        return Ok(new { id, name, role });
+    }
+}
+
+// DTO to allow partial updates without validation errors
+public class UpdateUserDto
+{
+    public string? Username { get; set; }
+    public string? Email { get; set; }
+    public string? Phone { get; set; }
+    public bool? IsAdmin { get; set; }
+    public bool? Verified { get; set; }
 }

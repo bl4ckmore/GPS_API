@@ -13,8 +13,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ECommerceApp.Infrastructure.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20251105184241_AddEmailLogTable_new")]
-    partial class AddEmailLogTable_new
+    [Migration("20251203092224_InitialMaster")]
+    partial class InitialMaster
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -38,6 +38,9 @@ namespace ECommerceApp.Infrastructure.Migrations
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("Email")
+                        .HasColumnType("text");
+
                     b.Property<bool>("IsAdmin")
                         .HasColumnType("boolean");
 
@@ -47,12 +50,21 @@ namespace ECommerceApp.Infrastructure.Migrations
                     b.Property<DateTime?>("LastLoginAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("PasswordHash")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Phone")
+                        .HasColumnType("text");
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Username")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<bool>("Verified")
+                        .HasColumnType("boolean");
 
                     b.HasKey("id");
 
@@ -240,6 +252,9 @@ namespace ECommerceApp.Infrastructure.Migrations
                     b.Property<string>("Notes")
                         .HasColumnType("text");
 
+                    b.Property<string>("OrderNumber")
+                        .HasColumnType("text");
+
                     b.Property<string>("Phone")
                         .HasColumnType("text");
 
@@ -287,10 +302,12 @@ namespace ECommerceApp.Infrastructure.Migrations
                         .HasColumnType("boolean");
 
                     b.Property<Guid>("OrderId")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("OrderId");
 
                     b.Property<Guid>("ProductId")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("ProductId");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -315,10 +332,6 @@ namespace ECommerceApp.Infrastructure.Migrations
                     b.HasKey("id");
 
                     b.HasIndex("OrderId");
-
-                    b.HasIndex("ProductId");
-
-                    b.HasIndex("OrderId", "ProductId");
 
                     b.ToTable("OrderItems");
                 });
@@ -437,6 +450,15 @@ namespace ECommerceApp.Infrastructure.Migrations
                     b.Navigation("Product");
                 });
 
+            modelBuilder.Entity("ECommerceApp.Core.Entities.OrderItem", b =>
+                {
+                    b.HasOne("ECommerceApp.Core.Entities.Order", null)
+                        .WithMany("Items")
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("ECommerceApp.Core.Entities.Product", b =>
                 {
                     b.HasOne("ECommerceApp.Core.Entities.Category", "Category")
@@ -450,6 +472,11 @@ namespace ECommerceApp.Infrastructure.Migrations
             modelBuilder.Entity("ECommerceApp.Core.Entities.Category", b =>
                 {
                     b.Navigation("Products");
+                });
+
+            modelBuilder.Entity("ECommerceApp.Core.Entities.Order", b =>
+                {
+                    b.Navigation("Items");
                 });
 #pragma warning restore 612, 618
         }

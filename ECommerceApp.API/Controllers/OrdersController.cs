@@ -59,8 +59,16 @@ public sealed class OrdersController : ControllerBase
                 Status = o.Status.ToString(),
                 o.Total,
                 o.CreatedAt,
+                // Customer Info
                 CustomerName = u != null ? u.Username : (o.FullName ?? "Guest"),
                 o.Email,
+                o.Phone,        // Added
+                o.AddressLine,  // Added
+                o.City,         // Added
+                o.Country,      // Added
+                o.Notes,        // Added
+
+                // Stats
                 ItemCount = o.Items.Count
             };
 

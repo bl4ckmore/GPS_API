@@ -22,20 +22,21 @@ public sealed class OrdersController : ControllerBase
     private readonly IEmailSender _email;
     private readonly ILogger<OrdersController> _log;
     private readonly IConfiguration _config;
-    private readonly IServiceProvider _serviceProvider;
+    // FIX 1: Use IServiceScopeFactory (Singleton) instead of IServiceProvider (Scoped)
+    private readonly IServiceScopeFactory _scopeFactory;
 
     public OrdersController(
         ApplicationDbContext db,
         IEmailSender email,
         ILogger<OrdersController> log,
         IConfiguration config,
-        IServiceProvider serviceProvider)
+        IServiceScopeFactory scopeFactory) // FIX 2: Inject Factory
     {
         _db = db;
         _email = email;
         _log = log;
         _config = config;
-        _serviceProvider = serviceProvider;
+        _scopeFactory = scopeFactory;
     }
 
     [HttpGet]
@@ -134,9 +135,9 @@ public sealed class OrdersController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
 
-        // --- FIXED: .Cast<dynamic>() ---
         var emailItems = items.Cast<dynamic>();
 
+        // Fire & forget emails 
         _ = Task.Run(async () =>
         {
             await SendOrderEmails(order.Email, orderNumber, total, emailItems, req.FullName, req.AddressLine);
@@ -189,7 +190,9 @@ public sealed class OrdersController : ControllerBase
     {
         try
         {
-            using var scope = _serviceProvider.CreateScope();
+            // FIX 3: Use _scopeFactory.CreateScope() which is thread-safe and doesn't expire with the request
+            using var scope = _scopeFactory.CreateScope();
+
             var emailSender = scope.ServiceProvider.GetRequiredService<IEmailSender>();
             var config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
 

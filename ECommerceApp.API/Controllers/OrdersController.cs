@@ -8,7 +8,7 @@ using ECommerceApp.Infrastructure.Data;
 using ECommerceApp.Core.Entities;
 using ECommerceApp.Core.Interfaces;
 using System.Linq;
-using ECommerceApp.Infrastructure.Email; // Added to ensure .Cast<dynamic>() works
+using ECommerceApp.Infrastructure.Email;
 
 namespace ECommerceApp.API.Controllers;
 
@@ -38,7 +38,6 @@ public sealed class OrdersController : ControllerBase
         _serviceProvider = serviceProvider;
     }
 
-    // ================== ADMIN: LIST ALL ORDERS ==================
     [HttpGet]
     [Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme, Roles = "Admin")]
     public async Task<IActionResult> GetAllOrders(CancellationToken ct)
@@ -69,7 +68,6 @@ public sealed class OrdersController : ControllerBase
         return Ok(list);
     }
 
-    // ================== CLIENT: PLACE ORDER ==================
     [HttpPost("place")]
     public async Task<IActionResult> Place([FromBody] PlaceOrderRequest req, CancellationToken ct)
     {
@@ -131,16 +129,14 @@ public sealed class OrdersController : ControllerBase
             });
         }
 
-        // Clear cart
         var cartItems = _db.CartItems.Where(ci => ci.CartId == cart.id);
         _db.CartItems.RemoveRange(cartItems);
 
         await _db.SaveChangesAsync(ct);
 
-        // --- FIX IS HERE: .Cast<dynamic>() ---
+        // --- FIXED: .Cast<dynamic>() ---
         var emailItems = items.Cast<dynamic>();
 
-        // Fire & forget emails with DETAILED HTML
         _ = Task.Run(async () =>
         {
             await SendOrderEmails(order.Email, orderNumber, total, emailItems, req.FullName, req.AddressLine);
@@ -155,7 +151,6 @@ public sealed class OrdersController : ControllerBase
         });
     }
 
-    // ================== CLIENT: MY ORDERS ==================
     [HttpGet("my")]
     public async Task<IActionResult> MyOrders(CancellationToken ct)
     {
@@ -171,15 +166,26 @@ public sealed class OrdersController : ControllerBase
         return Ok(orders);
     }
 
-    // ================== EMAIL SENDER (BACKGROUND) ==================
-    // FIX: Changed List<dynamic> to IEnumerable<dynamic>
-    private async Task SendOrderEmails(
-        string? userEmail,
-        string orderNum,
-        decimal total,
-        IEnumerable<dynamic> items,
-        string? customerName,
-        string? address)
+    [HttpGet("{orderId:guid}/items")]
+    public async Task<IActionResult> GetItems(Guid orderId, CancellationToken ct)
+    {
+        var userId = await ResolveUserIdAsync(ct);
+        var isAdmin = User.IsInRole("Admin");
+
+        var isUserOrder = await _db.Orders.AnyAsync(o => o.id == orderId && o.UserId == userId, ct);
+
+        if (!isUserOrder && !isAdmin) return NotFound();
+
+        var items = await _db.OrderItems
+            .Where(oi => oi.OrderId == orderId)
+            .Join(_db.Products, oi => oi.ProductId, p => p.id, (oi, p) => new
+            { oi.id, p.Name, p.SKU, p.ImageUrl, Qty = oi.qty, UnitPrice = oi.unitPrice })
+            .ToListAsync(ct);
+
+        return Ok(items);
+    }
+
+    private async Task SendOrderEmails(string? userEmail, string orderNum, decimal total, IEnumerable<dynamic> items, string? customerName, string? address)
     {
         try
         {
@@ -189,7 +195,6 @@ public sealed class OrdersController : ControllerBase
 
             var adminEmail = config["AppConfig:ORDERS_ADMIN_EMAIL"];
 
-            // --- BUILD HTML EMAIL ---
             var sb = new StringBuilder();
             sb.Append($"<h2>Order Confirmation: {orderNum}</h2>");
             sb.Append($"<p>Dear {customerName ?? "Customer"},</p>");
@@ -205,7 +210,6 @@ public sealed class OrdersController : ControllerBase
             foreach (var item in items)
             {
                 sb.Append("<tr>");
-                // Using dynamic access here works because items is IEnumerable<dynamic>
                 sb.Append($"<td style='padding: 8px; border-bottom: 1px solid #ddd;'>{item.Title}</td>");
                 sb.Append($"<td style='padding: 8px; border-bottom: 1px solid #ddd;'>{item.Qty}</td>");
                 sb.Append($"<td style='padding: 8px; border-bottom: 1px solid #ddd;'>{item.UnitPrice:C}</td>");
@@ -220,17 +224,11 @@ public sealed class OrdersController : ControllerBase
 
             var body = sb.ToString();
 
-            // 1. Send to Customer
             if (!string.IsNullOrWhiteSpace(userEmail))
-            {
                 await emailSender.SendAsync(userEmail, $"Order #{orderNum} Confirmed", body, CancellationToken.None);
-            }
 
-            // 2. Send to Admin
             if (!string.IsNullOrWhiteSpace(adminEmail))
-            {
                 await emailSender.SendAsync(adminEmail, $"[New Order] {orderNum} - {total:C}", body, CancellationToken.None);
-            }
         }
         catch (Exception ex)
         {
@@ -238,7 +236,6 @@ public sealed class OrdersController : ControllerBase
         }
     }
 
-    // ================== HELPERS ==================
     private async Task<Guid> ResolveUserIdAsync(CancellationToken ct)
     {
         var sub = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirst("sub")?.Value;
@@ -247,7 +244,17 @@ public sealed class OrdersController : ControllerBase
         var uid = User.FindFirst("userId")?.Value ?? User.FindFirst("uid")?.Value;
         if (Guid.TryParse(uid, out var g2)) return g2;
 
-        return Guid.Empty; // Fail safely
+        var username = User.Identity?.Name ?? User.FindFirst(ClaimTypes.Email)?.Value;
+        if (!string.IsNullOrWhiteSpace(username))
+        {
+            var userId = await _db.Users
+                .Where(u => u.Username == username || u.Email == username)
+                .Select(u => u.id)
+                .FirstOrDefaultAsync(ct);
+            if (userId != Guid.Empty) return userId;
+        }
+
+        return Guid.Empty;
     }
 
     public sealed class PlaceOrderRequest

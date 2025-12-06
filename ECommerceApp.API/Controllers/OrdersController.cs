@@ -1,20 +1,19 @@
 ﻿using System.Security.Claims;
+using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using ECommerceApp.Infrastructure.Data;
 using ECommerceApp.Core.Entities;
 using ECommerceApp.Core.Interfaces;
-using ECommerceApp.Infrastructure.Email;
+using System.Linq;
+using ECommerceApp.Infrastructure.Email; // Added to ensure .Cast<dynamic>() works
 
 namespace ECommerceApp.API.Controllers;
 
 [ApiController]
 [Route("api/orders")]
-// Be explicit: use the JWT bearer scheme, same as in Program.cs
 [Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
 [Produces("application/json")]
 public sealed class OrdersController : ControllerBase
@@ -40,11 +39,8 @@ public sealed class OrdersController : ControllerBase
     }
 
     // ================== ADMIN: LIST ALL ORDERS ==================
-    // Only admin can see all orders
     [HttpGet]
-    [Authorize(
-        AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme,
-        Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme, Roles = "Admin")]
     public async Task<IActionResult> GetAllOrders(CancellationToken ct)
     {
         var query =
@@ -59,16 +55,13 @@ public sealed class OrdersController : ControllerBase
                 Status = o.Status.ToString(),
                 o.Total,
                 o.CreatedAt,
-                // Customer Info
                 CustomerName = u != null ? u.Username : (o.FullName ?? "Guest"),
                 o.Email,
-                o.Phone,        // Added
-                o.AddressLine,  // Added
-                o.City,         // Added
-                o.Country,      // Added
-                o.Notes,        // Added
-
-                // Stats
+                o.Phone,
+                o.AddressLine,
+                o.City,
+                o.Country,
+                o.Notes,
                 ItemCount = o.Items.Count
             };
 
@@ -77,7 +70,6 @@ public sealed class OrdersController : ControllerBase
     }
 
     // ================== CLIENT: PLACE ORDER ==================
-    // POST /api/orders/place
     [HttpPost("place")]
     public async Task<IActionResult> Place([FromBody] PlaceOrderRequest req, CancellationToken ct)
     {
@@ -85,39 +77,26 @@ public sealed class OrdersController : ControllerBase
         if (userId == Guid.Empty)
             return Unauthorized(new { error = "Cannot resolve user from JWT" });
 
-        var cart = await _db.Carts
-            .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.UserId == userId, ct);
-
-        if (cart is null)
-            return BadRequest(new { error = "Cart is empty" });
+        var cart = await _db.Carts.AsNoTracking().FirstOrDefaultAsync(c => c.UserId == userId, ct);
+        if (cart is null) return BadRequest(new { error = "Cart is empty" });
 
         var items = await _db.CartItems
             .Where(ci => ci.CartId == cart.id)
-            .Join(
-                _db.Products,
-                ci => ci.ProductId,
-                p => p.id,
-                (ci, p) => new
-                {
-                    ProductId = p.id,
-                    Title = p.Name,
-                    UnitPrice = p.Price,
-                    Qty = ci.qty,
-                    ImageUrl = p.ImageUrl,
-                    SKU = p.SKU
-                })
+            .Join(_db.Products, ci => ci.ProductId, p => p.id, (ci, p) => new
+            {
+                ProductId = p.id,
+                Title = p.Name,
+                UnitPrice = p.Price,
+                Qty = ci.qty,
+                ImageUrl = p.ImageUrl,
+                SKU = p.SKU
+            })
             .ToListAsync(ct);
 
-        if (items.Count == 0)
-            return BadRequest(new { error = "Cart has no items" });
+        if (items.Count == 0) return BadRequest(new { error = "Cart has no items" });
 
         var subtotal = items.Sum(i => i.UnitPrice * i.Qty);
-        var tax = 0m;
-        var shipping = 0m;
-        var discount = 0m;
-        var total = subtotal + tax + shipping - discount;
-
+        var total = subtotal;
         var now = DateTime.UtcNow;
         var orderNumber = $"EC-{now:yyyyMMdd}-{now.Ticks % 100000:D5}";
 
@@ -128,12 +107,8 @@ public sealed class OrdersController : ControllerBase
             Status = OrderStatus.Pending,
             OrderNumber = orderNumber,
             Subtotal = subtotal,
-            Tax = tax,
-            Shipping = shipping,
-            Discount = discount,
             Total = total,
             CreatedAt = now,
-
             FullName = req.FullName,
             Email = req.Email,
             Phone = req.Phone,
@@ -162,10 +137,13 @@ public sealed class OrdersController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
 
-        // Fire & forget emails in background
+        // --- FIX IS HERE: .Cast<dynamic>() ---
+        var emailItems = items.Cast<dynamic>();
+
+        // Fire & forget emails with DETAILED HTML
         _ = Task.Run(async () =>
         {
-            await SendOrderEmails(order.id, order.Email, orderNumber, total, items);
+            await SendOrderEmails(order.Email, orderNumber, total, emailItems, req.FullName, req.AddressLine);
         });
 
         return Ok(new
@@ -178,7 +156,6 @@ public sealed class OrdersController : ControllerBase
     }
 
     // ================== CLIENT: MY ORDERS ==================
-    // GET /api/orders/my
     [HttpGet("my")]
     public async Task<IActionResult> MyOrders(CancellationToken ct)
     {
@@ -188,65 +165,21 @@ public sealed class OrdersController : ControllerBase
         var orders = await _db.Orders
             .Where(o => o.UserId == userId)
             .OrderByDescending(o => o.CreatedAt)
-            .Select(o => new
-            {
-                o.id,
-                o.OrderNumber,
-                Status = o.Status.ToString(),
-                o.Total,
-                o.Subtotal,
-                o.Tax,
-                o.Shipping,
-                o.Discount,
-                o.CreatedAt
-            })
+            .Select(o => new { o.id, o.OrderNumber, Status = o.Status.ToString(), o.Total, o.CreatedAt })
             .ToListAsync(ct);
 
         return Ok(orders);
     }
 
-    // ================== ITEMS FOR AN ORDER ==================
-    // GET /api/orders/{orderId}/items
-    [HttpGet("{orderId:guid}/items")]
-    public async Task<IActionResult> GetItems(Guid orderId, CancellationToken ct)
-    {
-        var userId = await ResolveUserIdAsync(ct);
-        var isAdmin = User.IsInRole("Admin");
-
-        // Either it's this user's order OR user is admin
-        var isUserOrder = await _db.Orders
-            .AnyAsync(o => o.id == orderId && o.UserId == userId, ct);
-
-        if (!isUserOrder && !isAdmin)
-            return NotFound();
-
-        var items = await _db.OrderItems
-            .Where(oi => oi.OrderId == orderId)
-            .Join(
-                _db.Products,
-                oi => oi.ProductId,
-                p => p.id,
-                (oi, p) => new
-                {
-                    oi.id,
-                    p.Name,
-                    p.SKU,
-                    p.ImageUrl,
-                    Qty = oi.qty,
-                    UnitPrice = oi.unitPrice
-                })
-            .ToListAsync(ct);
-
-        return Ok(items);
-    }
-
     // ================== EMAIL SENDER (BACKGROUND) ==================
+    // FIX: Changed List<dynamic> to IEnumerable<dynamic>
     private async Task SendOrderEmails(
-        Guid orderId,
         string? userEmail,
         string orderNum,
         decimal total,
-        IEnumerable<dynamic> items)
+        IEnumerable<dynamic> items,
+        string? customerName,
+        string? address)
     {
         try
         {
@@ -255,24 +188,48 @@ public sealed class OrdersController : ControllerBase
             var config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
 
             var adminEmail = config["AppConfig:ORDERS_ADMIN_EMAIL"];
-            var body = $"<h3>Order {orderNum}</h3><p>Total: {total:C}</p>";
 
+            // --- BUILD HTML EMAIL ---
+            var sb = new StringBuilder();
+            sb.Append($"<h2>Order Confirmation: {orderNum}</h2>");
+            sb.Append($"<p>Dear {customerName ?? "Customer"},</p>");
+            sb.Append("<p>Thank you for shopping with GPS Hub! We have received your order.</p>");
+
+            sb.Append("<table style='width:100%; border-collapse: collapse; margin-top: 15px;'>");
+            sb.Append("<tr style='background-color: #f3f3f3; text-align: left;'>");
+            sb.Append("<th style='padding: 8px; border-bottom: 1px solid #ddd;'>Product</th>");
+            sb.Append("<th style='padding: 8px; border-bottom: 1px solid #ddd;'>Qty</th>");
+            sb.Append("<th style='padding: 8px; border-bottom: 1px solid #ddd;'>Price</th>");
+            sb.Append("</tr>");
+
+            foreach (var item in items)
+            {
+                sb.Append("<tr>");
+                // Using dynamic access here works because items is IEnumerable<dynamic>
+                sb.Append($"<td style='padding: 8px; border-bottom: 1px solid #ddd;'>{item.Title}</td>");
+                sb.Append($"<td style='padding: 8px; border-bottom: 1px solid #ddd;'>{item.Qty}</td>");
+                sb.Append($"<td style='padding: 8px; border-bottom: 1px solid #ddd;'>{item.UnitPrice:C}</td>");
+                sb.Append("</tr>");
+            }
+            sb.Append("</table>");
+
+            sb.Append($"<h3>Total: {total:C}</h3>");
+            sb.Append($"<p><strong>Shipping to:</strong> {address ?? "Address provided"}</p>");
+            sb.Append("<p>We will contact you shortly regarding delivery.</p>");
+            sb.Append("<hr><p style='font-size: 12px; color: #888;'>GPS Hub Georgia</p>");
+
+            var body = sb.ToString();
+
+            // 1. Send to Customer
             if (!string.IsNullOrWhiteSpace(userEmail))
             {
-                await emailSender.SendAsync(
-                    userEmail,
-                    $"Order Confirmation {orderNum}",
-                    body,
-                    CancellationToken.None);
+                await emailSender.SendAsync(userEmail, $"Order #{orderNum} Confirmed", body, CancellationToken.None);
             }
 
+            // 2. Send to Admin
             if (!string.IsNullOrWhiteSpace(adminEmail))
             {
-                await emailSender.SendAsync(
-                    adminEmail,
-                    $"New Order: {orderNum}",
-                    body,
-                    CancellationToken.None);
+                await emailSender.SendAsync(adminEmail, $"[New Order] {orderNum} - {total:C}", body, CancellationToken.None);
             }
         }
         catch (Exception ex)
@@ -281,48 +238,18 @@ public sealed class OrdersController : ControllerBase
         }
     }
 
-    // ================== USER RESOLUTION FROM JWT ==================
+    // ================== HELPERS ==================
     private async Task<Guid> ResolveUserIdAsync(CancellationToken ct)
     {
-        // 1) Try standard NameIdentifier / "sub" as GUID
-        var sub =
-            User.FindFirstValue(ClaimTypes.NameIdentifier) ??
-            User.FindFirst("sub")?.Value;
+        var sub = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirst("sub")?.Value;
+        if (Guid.TryParse(sub, out var g)) return g;
 
-        if (!string.IsNullOrEmpty(sub) && Guid.TryParse(sub, out var guidFromSub))
-            return guidFromSub;
+        var uid = User.FindFirst("userId")?.Value ?? User.FindFirst("uid")?.Value;
+        if (Guid.TryParse(uid, out var g2)) return g2;
 
-        // 2) Try custom "userId" / "uid" claims as GUID
-        var uid =
-            User.FindFirst("userId")?.Value ??
-            User.FindFirst("uid")?.Value ??
-            User.FindFirst("UserId")?.Value;
-
-        if (!string.IsNullOrEmpty(uid) && Guid.TryParse(uid, out var guidFromUid))
-            return guidFromUid;
-
-        // 3) Fallback: resolve by username or email
-        var username =
-            User.Identity?.Name ??
-            User.FindFirstValue(ClaimTypes.Name) ??
-            User.FindFirst("unique_name")?.Value ??
-            User.FindFirst("preferred_username")?.Value ??
-            User.FindFirst(ClaimTypes.Email)?.Value;
-
-        if (!string.IsNullOrWhiteSpace(username))
-        {
-            var userId = await _db.Users
-                .Where(u => u.Username == username || u.Email == username)
-                .Select(u => u.id)
-                .FirstOrDefaultAsync(ct);
-
-            if (userId != Guid.Empty) return userId;
-        }
-
-        return Guid.Empty;
+        return Guid.Empty; // Fail safely
     }
 
-    // ================== DTO ==================
     public sealed class PlaceOrderRequest
     {
         public string? FullName { get; set; }

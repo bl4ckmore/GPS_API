@@ -8,16 +8,20 @@ using Microsoft.IdentityModel.Tokens;
 namespace ECommerceApp.Infrastructure.Services
 {
     /// <summary>
-    /// JWT minting service compatible with IJwtTokenService.Create(string, string, int).
-    ///  - arg1: subject (username/userId)
-    ///  - arg2: audience (or role name; we store it as audience and also as "roleName" claim)
-    ///  - arg3: roleId (1=user, 2=admin)
+    /// JWT minting service.
+    /// Sets token expiration to 24 hours to allow the Frontend Inactivity Tracker (3 hours) 
+    /// to manage the session lifetime without premature server-side expiration.
     /// </summary>
     public sealed class JwtTokenService : IJwtTokenService
     {
         private readonly SymmetricSecurityKey _key;
         private readonly string? _issuer;
         private readonly string? _audienceDefault;
+
+        // Token Lifetime set to 24 Hours
+        // This ensures the user stays logged in as long as they are active.
+        // If they are inactive for 3 hours, the Angular app will log them out.
+        private readonly TimeSpan _tokenLifetime = TimeSpan.FromHours(24);
 
         public JwtTokenService(IConfiguration cfg)
         {
@@ -37,18 +41,25 @@ namespace ECommerceApp.Infrastructure.Services
         // Required signature: (subject, audienceOrRoleName, roleId)
         public string Create(string subject, string audienceOrRoleName, int roleId)
         {
+            // Determine audience and role name claims
             var audience = string.IsNullOrWhiteSpace(audienceOrRoleName) ? _audienceDefault : audienceOrRoleName;
+
+            // If audienceOrRoleName is strictly an Audience (like "whatsgps"), we still need a role name for the claim
+            var roleName = string.IsNullOrWhiteSpace(audienceOrRoleName) || audienceOrRoleName.Contains(".")
+                           ? (roleId == 2 ? "Admin" : "User")
+                           : audienceOrRoleName;
+
             var extra = new Dictionary<string, string>
             {
-                { "roleName", string.IsNullOrWhiteSpace(audienceOrRoleName) ? (roleId == 2 ? "Admin" : "User") : audienceOrRoleName }
+                { "roleName", roleName }
             };
 
-            return CreateToken(subject, roleId, audience, extra, TimeSpan.FromHours(24));
+            return CreateToken(subject, roleId, audience, extra, _tokenLifetime);
         }
 
-        // Convenience
+        // Convenience overload
         public string Create(string subject, int roleId)
-            => CreateToken(subject, roleId, _audienceDefault, null, TimeSpan.FromHours(24));
+            => CreateToken(subject, roleId, _audienceDefault, null, _tokenLifetime);
 
         private string CreateToken(
             string subject,
@@ -62,16 +73,26 @@ namespace ECommerceApp.Infrastructure.Services
                 new(JwtRegisteredClaimNames.Sub, subject),
                 new(ClaimTypes.NameIdentifier, subject),
                 new(ClaimTypes.Name, subject),
+                // Standard Role Claim for [Authorize(Roles="...")]
                 new(ClaimTypes.Role, roleId == 2 ? "Admin" : "User"),
+                // Custom Claim for Frontend Logic
                 new("roleId", roleId.ToString())
             };
 
             if (extraClaims != null)
+            {
                 foreach (var kv in extraClaims)
-                    claims.Add(new Claim(kv.Key, kv.Value));
+                {
+                    // Avoid duplicate keys if they already exist
+                    if (!claims.Any(c => c.Type == kv.Key))
+                    {
+                        claims.Add(new Claim(kv.Key, kv.Value));
+                    }
+                }
+            }
 
             var creds = new SigningCredentials(_key, SecurityAlgorithms.HmacSha256);
-            var expires = DateTime.UtcNow.Add(lifetime ?? TimeSpan.FromHours(24));
+            var expires = DateTime.UtcNow.Add(lifetime ?? _tokenLifetime);
 
             var token = new JwtSecurityToken(
                 issuer: _issuer,

@@ -15,15 +15,25 @@ using Npgsql;
 using ECommerceApp.Core.Entities;
 using Microsoft.AspNetCore.Identity;
 using ECommerceApp.API.Controllers;
-using ECommerceApp.Core.Entities;
-using Microsoft.AspNetCore.Identity;
-
+using Microsoft.Extensions.Configuration;        // For AddJsonFile / config builder extensions
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ===============================================
+// Disable config file watching (reloadOnChange)
+// to avoid inotify/file descriptor limits in Linux
+// ===============================================
+builder.Configuration.Sources.Clear();
+
+builder.Configuration
+    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
+    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: false)
+    .AddEnvironmentVariables();
 
 // ---------- PostgreSQL + EF Core ----------
 var cs = builder.Configuration.GetConnectionString("Default")
          ?? throw new InvalidOperationException("ConnectionStrings:Default is missing.");
+
 var dsb = new NpgsqlDataSourceBuilder(cs);
 dsb.EnableDynamicJson();
 var dataSource = dsb.Build();
@@ -35,7 +45,6 @@ builder.Services.AddControllers();
 
 builder.Services.AddScoped<IPasswordHasher<AppUser>, PasswordHasher<AppUser>>();
 builder.Services.AddScoped<WhatsGpsAuthController>();
-
 
 // ---------- CORS (single place) ----------
 const string CorsPolicy = "ng";
@@ -68,9 +77,7 @@ builder.Services.AddHttpClient("whats", c =>
 });
 
 // Register Users
-
 builder.Services.AddScoped<IPasswordHasher<AppUser>, PasswordHasher<AppUser>>();
-
 
 // ---------- Whats session store (in-memory) ----------
 builder.Services.AddSingleton<IWhatsSessionStore, InMemoryWhatsSessionStore>();

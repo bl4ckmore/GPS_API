@@ -50,26 +50,29 @@ public class ApplicationDbContext : DbContext
         });
 
         // CartItem — your entity uses lower-case 'qty' and 'unitPrice'
-        modelBuilder.Entity<CartItem>(e =>
+        modelBuilder.Entity<CartItem>(entity =>
         {
-            e.HasKey(x => x.id);
+            // 1. Force Relationship (Cart has many Items)
+            entity.HasOne(ci => ci.Cart)
+                  .WithMany(c => c.Items)
+                  .HasForeignKey(ci => ci.CartId)
+                  .OnDelete(DeleteBehavior.Cascade);
 
-            e.Property(x => x.qty).HasDefaultValue(1);
-            e.Property(x => x.unitPrice).HasColumnType("numeric(18,2)");
+            // 2. Force Relationship (Item has one Product)
+            entity.HasOne(ci => ci.Product)
+                  .WithMany()
+                  .HasForeignKey(ci => ci.ProductId)
+                  .OnDelete(DeleteBehavior.Cascade);
 
-            e.HasIndex(x => x.CartId);
-            e.HasIndex(x => x.ProductId);
-            e.HasIndex(x => new { x.CartId, x.IsDeleted });
+            // 3. FORCE COLUMN NAMES (Fixes "Cartid does not exist" error)
+            entity.Property(ci => ci.CartId).HasColumnName("CartId");
+            entity.Property(ci => ci.ProductId).HasColumnName("ProductId");
 
-            e.HasOne(x => x.Cart)
-             .WithMany()                 // use .WithMany(c => c.Items) if Cart has Items
-             .HasForeignKey(x => x.CartId)
-             .OnDelete(DeleteBehavior.Cascade);
+            // 4. Force lowercase 'qty'
+            entity.Property(ci => ci.qty).HasColumnName("qty");
 
-            e.HasOne(x => x.Product)
-             .WithMany()
-             .HasForeignKey(x => x.ProductId)
-             .OnDelete(DeleteBehavior.Restrict);
+            // ❌ REMOVED: entity.Ignore(ci => ci.unitPrice); 
+            // We deleted unitPrice from the class, so we must delete this line too.
         });
 
         // Order

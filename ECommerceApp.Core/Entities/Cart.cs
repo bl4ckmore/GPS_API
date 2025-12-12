@@ -3,5 +3,7 @@ namespace ECommerceApp.Core.Entities;
 public class Cart : BaseEntity
 {
     public Guid UserId { get; set; }
-    // Remove local IsDeleted — we already inherit IsDeleted from BaseEntity
+
+    // Navigation property (Optional but recommended)
+    public ICollection<CartItem> Items { get; set; } = new List<CartItem>();
 }

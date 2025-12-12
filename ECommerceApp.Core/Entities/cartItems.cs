@@ -1,21 +1,20 @@
-using System;
+ï»¿using System.ComponentModel.DataAnnotations.Schema;
 
 namespace ECommerceApp.Core.Entities
 {
-    // Inherits your existing BaseEntity in the same namespace.
-    // Do NOT redeclare 'id', CreatedAt, etc.—they come from BaseEntity.
     public class CartItem : BaseEntity
     {
-        // Foreign keys
         public Guid CartId { get; set; }
         public Guid ProductId { get; set; }
-
-        // Business fields (camelCase to match the rest of your code)
         public int qty { get; set; } = 1;
-        public decimal unitPrice { get; set; } = 0m;
 
-        // Navigations (optional)
+        // Add this back to fix the build error
+        public decimal unitPrice { get; set; }
+
+        [ForeignKey("CartId")]
         public Cart? Cart { get; set; }
+
+        [ForeignKey("ProductId")]
         public Product? Product { get; set; }
     }
 }

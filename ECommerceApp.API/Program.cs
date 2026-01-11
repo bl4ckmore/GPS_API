@@ -34,6 +34,8 @@ builder.Configuration
 var cs = builder.Configuration.GetConnectionString("Default")
          ?? throw new InvalidOperationException("ConnectionStrings:Default is missing.");
 
+
+
 var dsb = new NpgsqlDataSourceBuilder(cs);
 dsb.EnableDynamicJson();
 var dataSource = dsb.Build();

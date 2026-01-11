@@ -14,27 +14,52 @@ public class ApplicationDbContext : DbContext
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
     public DbSet<Category> Categories => Set<Category>();
-    public DbSet<EmailLog> EmailLogs => Set<EmailLog>(); // <-- ADD THIS LINE
+    public DbSet<EmailLog> EmailLogs => Set<EmailLog>();
+    public DbSet<Survey> Surveys { get; set; }
+    public DbSet<SurveyQuestion> SurveyQuestions { get; set; }
+    public DbSet<SurveyResponse> SurveyResponses { get; set; }
+    public DbSet<SurveyAnswer> SurveyAnswers { get; set; }
+    public DbSet<SurveyType> SurveyTypes { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
 
-        // pick up IEntityTypeConfiguration<T> in this assembly (e.g., ProductConfiguration)
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
+
+        // === Fix for PostgreSQL Case Sensitivity ===
+
+        // 1. Survey (იყენებს BaseEntity-ს, სადაც არის პატარა 'id')
+        modelBuilder.Entity<Survey>(e =>
+        {
+            // აქ ვიყენებთ x.id-ს (პატარა ასოთი), რადგან BaseEntity-ში ასეა
+            e.Property(x => x.id).HasColumnName("id");
+        });
+
+        // 2. SurveyResponse (ამ კლასში გვაქვს დიდი 'Id')
+        modelBuilder.Entity<SurveyResponse>(e =>
+        {
+            e.HasKey(x => x.Id);
+            // C#-ის 'Id'-ს ვაბამთ ბაზის 'id' სვეტს
+            e.Property(x => x.Id).HasColumnName("id");
+
+            e.Property(x => x.SurveyId).HasColumnName("survey_id");
+            e.Property(x => x.UserId).HasColumnName("user_id");
+            e.Property(x => x.Data).HasColumnName("data").HasColumnType("jsonb");
+        });
+
+        // ===========================================
 
         // Product
         modelBuilder.Entity<Product>(e =>
         {
             e.HasKey(x => x.id);
-            // if your Product has Price (PascalCase), keep this next line;
-            // if it's lower-case 'price', change to x.price
             e.Property(x => x.Price).HasColumnType("numeric(18,2)");
             e.Property(x => x.CategoryId).HasColumnType("uuid").IsRequired(false);
             e.HasIndex(x => x.CategoryId);
         });
 
-        // Category (key is 'id', not 'Id')
+        // Category
         modelBuilder.Entity<Category>(e =>
         {
             e.HasKey(x => x.id);
@@ -49,30 +74,22 @@ public class ApplicationDbContext : DbContext
             e.HasIndex(x => new { x.UserId, x.IsDeleted });
         });
 
-        // CartItem — your entity uses lower-case 'qty' and 'unitPrice'
+        // CartItem
         modelBuilder.Entity<CartItem>(entity =>
         {
-            // 1. Force Relationship (Cart has many Items)
             entity.HasOne(ci => ci.Cart)
                   .WithMany(c => c.Items)
                   .HasForeignKey(ci => ci.CartId)
                   .OnDelete(DeleteBehavior.Cascade);
 
-            // 2. Force Relationship (Item has one Product)
             entity.HasOne(ci => ci.Product)
                   .WithMany()
                   .HasForeignKey(ci => ci.ProductId)
                   .OnDelete(DeleteBehavior.Cascade);
 
-            // 3. FORCE COLUMN NAMES (Fixes "Cartid does not exist" error)
             entity.Property(ci => ci.CartId).HasColumnName("CartId");
             entity.Property(ci => ci.ProductId).HasColumnName("ProductId");
-
-            // 4. Force lowercase 'qty'
             entity.Property(ci => ci.qty).HasColumnName("qty");
-
-            // ❌ REMOVED: entity.Ignore(ci => ci.unitPrice); 
-            // We deleted unitPrice from the class, so we must delete this line too.
         });
 
         // Order
@@ -87,18 +104,14 @@ public class ApplicationDbContext : DbContext
             e.HasIndex(x => new { x.UserId, x.CreatedAt });
         });
 
-        // OrderItem — lower-case 'qty' and 'unitPrice'
+        // OrderItem
         modelBuilder.Entity<OrderItem>(e =>
         {
             e.HasKey(x => x.id);
-
-            e.Property(x => x.OrderId).HasColumnName("OrderId"); 
-
-            e.Property(x => x.ProductId).HasColumnName("ProductId"); 
-
+            e.Property(x => x.OrderId).HasColumnName("OrderId");
+            e.Property(x => x.ProductId).HasColumnName("ProductId");
             e.Property(x => x.unitPrice).HasColumnType("numeric(18,2)");
             e.Property(x => x.qty).HasDefaultValue(1);
-
             e.HasIndex(x => x.OrderId);
         });
     }

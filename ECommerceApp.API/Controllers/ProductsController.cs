@@ -155,6 +155,7 @@ public class ProductsController : ControllerBase
         p.SalePrice = body.SalePrice;
         p.Stock = body.Stock;
         p.ImageUrl = body.ImageUrl;
+        p.VideoUrl = body.VideoUrl;
         p.Images = body.Images;
         p.Features = body.Features;
         p.Parameters = body.Parameters;

@@ -36,5 +36,7 @@ namespace ECommerceApp.Core.Entities
 
         public double? Rating { get; set; }
         public int? ReviewCount { get; set; }
+
+        public string? VideoUrl { get; set; }
     }
 }

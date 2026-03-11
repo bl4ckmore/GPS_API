@@ -15,7 +15,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<EmailLog> EmailLogs => Set<EmailLog>();
-    
+
     // Survey Tables
     public DbSet<Survey> Surveys { get; set; }
     public DbSet<SurveyQuestion> SurveyQuestions { get; set; }
@@ -38,7 +38,7 @@ public class ApplicationDbContext : DbContext
         // [!] This was missing in the previous file [!]
         modelBuilder.Entity<SurveyType>(e =>
         {
-            e.Property(x => x.Id).HasColumnName("id"); 
+            e.Property(x => x.Id).HasColumnName("id");
         });
 
         // === 3. SURVEY RESPONSE ===
@@ -49,7 +49,7 @@ public class ApplicationDbContext : DbContext
             e.Property(x => x.SurveyId).HasColumnName("survey_id");
             e.Property(x => x.UserId).HasColumnName("user_id");
             e.Property(x => x.Data).HasColumnName("data").HasColumnType("jsonb");
-            
+
             e.HasMany(x => x.Answers)
              .WithOne()
              .HasForeignKey(a => a.ResponseId)
@@ -59,7 +59,7 @@ public class ApplicationDbContext : DbContext
         // === 4. SURVEY ANSWER ===
         modelBuilder.Entity<SurveyAnswer>(e =>
         {
-            e.Property(x => x.Id).HasColumnName("id"); 
+            e.Property(x => x.Id).HasColumnName("id");
             e.Property(x => x.ResponseId).HasColumnName("ResponseId");
             e.Property(x => x.QuestionId).HasColumnName("QuestionId");
             e.Property(x => x.AnswerValue).HasColumnName("AnswerValue");
@@ -81,6 +81,7 @@ public class ApplicationDbContext : DbContext
             e.Property(x => x.Price).HasColumnType("numeric(18,2)");
             e.Property(x => x.CategoryId).HasColumnType("uuid").IsRequired(false);
             e.HasIndex(x => x.CategoryId);
+            e.Property(x => x.VideoUrl).HasMaxLength(2048).IsRequired(false);
         });
 
         modelBuilder.Entity<Category>(e => {
